@@ -1,0 +1,6 @@
+ipython
+matplotlib==3.5
+sklearn
+yfinance==0.1
+numpy==1.21
+pandas==1.3
