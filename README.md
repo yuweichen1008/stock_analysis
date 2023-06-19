@@ -1,11 +1,18 @@
-# stock_analysis
-Stock analysis
+# Purpose
 
-
+Collection on AI trading algo and thought
 ## Setup
+For development purpose, please understand this is just a collection of trading algo and thought
+There are few notebook for you to learn from the best
 
-Clone a basic PyPortfolioOpt repo from official link
+# Installation
+
+
+For mac os install tensorflow, refer to [tensor-metal](https://developer.apple.com/metal/tensorflow-plugin/) page and install with requirement_m2.txt
+For window and other operating system, install package with
 ```
-git clone https://github.com/robertmartin8/PyPortfolioOpt
+pip install -r requirement.txt
 ```
 
+
+# Acknowledgement

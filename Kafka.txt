@@ -1,0 +1,17 @@
+
+Kafka web crawer
+
+1. Set up/pop server on News, Major Event, Taiwan Festival Cover
+
+
+Interface Planning
+1. logger ( realtime not saved )
+2. Customized watchlist
+3. Love and Art
+
+
+
+Push notification
+* On social media, LINE, etc.
+
+News Letter Subscribtion

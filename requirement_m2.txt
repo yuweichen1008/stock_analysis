@@ -1,0 +1,4 @@
+tensorflow==2.13
+tensorflow-metal==1.0
+yfinance==0.20
+seaborn==0.12.2
