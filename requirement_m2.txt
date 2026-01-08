@@ -1,2 +1,2 @@
-psycopg==2.9.9
 yfinance==0.2.37
+pandas
