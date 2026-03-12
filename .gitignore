@@ -1,3 +1,4 @@
 env
 *.hdf5
-*.npz
+*.npz.env
+.DS_Store
