@@ -1,18 +1,20 @@
 # Purpose
 
-Collection on AI trading algo and thought
+A collection of AI trading algorithms and tools for automated trading strategies. The project includes implementations for:
+- Triple-barrier labeling for financial time series data
+- Integration with Moomoo broker API for real-time trading
+- Database connectivity with Supabase for data persistence
+
 ## Setup
-For development purpose, please understand this is just a collection of trading algo and thought
-There are few notebook for you to learn from the best
+This repository contains various trading algorithms and tools for both learning and development purposes. The codebase includes:
+- Jupyter notebooks with examples and tutorials
+- Production-ready broker integration code
+- Data processing and labeling utilities
 
 # Installation
 
+The project has different dependencies based on your operating system:
 
-For mac os install tensorflow, refer to [tensor-metal](https://developer.apple.com/metal/tensorflow-plugin/) page and install with requirement_m2.txt
-For window and other operating system, install package with
-```
-pip install -r requirement.txt
-```
-
-
-# Acknowledgement
+For macOS with Apple Silicon (M1/M2):
+- Install TensorFlow with Metal support following the [tensor-metal guide](https://developer.apple.com/metal/tensorflow-plugin/)
+- Install dependencies with:

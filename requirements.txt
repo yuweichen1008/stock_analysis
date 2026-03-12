@@ -1,0 +1,10 @@
+moomoo-api>=2.3.0
+pandas>=1.3.0
+numpy>=1.21.0
+requests
+beautifulsoup4
+lxml
+openpyxl
+selenium
+webdriver-manager 
+backtesting
