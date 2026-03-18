@@ -9,9 +9,13 @@ import re
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ==================== Configuration ====================
-TICKERS_DIR = "data/tickers"
-OHLCV_DIR = "data/ohlcv"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 使用絕對路徑定義資料夾
+TICKERS_DIR = os.path.join(BASE_DIR, "data", "tickers")
+OHLCV_DIR = os.path.join(BASE_DIR, "data", "ohlcv")
+
+# 確保自動創建目錄
 os.makedirs(TICKERS_DIR, exist_ok=True)
 os.makedirs(OHLCV_DIR, exist_ok=True)
 

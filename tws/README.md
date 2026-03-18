@@ -71,10 +71,10 @@ python current_trending.py      # Run the screener
 python telegram_notifier.py     # Send news & report
 ```
 
-## ⏰ Automation (Crontab)
+## ⏰ Automation Setup (Crontab)
 
-To execute the full pipeline automatically every trading day at 15:30 (Taipei Time):
+To ensure the virtual environment is utilized, point the crontab directly to the environment's python binary:
 
-```
-`30 15 * * 1-5 /usr/bin/python3 <path_to_folder>/master_run.py`
-```
+1. Get your venv path: `source .venv/bin/activate && which python`
+2. Add to `crontab -e`:
+   `30 15 * * 1-5 /path/to/tws/.venv/bin/python /path/to/tws/master_run.py >> /path/to/tws/cron.log 2>&1`

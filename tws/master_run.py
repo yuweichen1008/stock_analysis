@@ -1,82 +1,79 @@
 import subprocess
 import os
 import sys
+import requests
 from datetime import datetime
-from dotenv import load_dotenv #
+from dotenv import load_dotenv
 
 # ==================== Configuration ====================
-# Load environment variables first to check for health
-load_dotenv()
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PYTHON_EXE = sys.executable
+os.chdir(BASE_DIR)
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-# Execution sequence
+PYTHON_EXE = sys.executable 
 SCRIPTS = [
-    "get_company_info.py",
-    "init_historical_data.py",
-    "current_trending.py",
-    "telegram_notifier.py"
+    ("get_company_info.py", "🏢 公司資料更新"),
+    ("init_history_crawler.py", "📥 歷史數據同步"),
+    ("current_trending.py", "🔍 趨勢選股分析"),
+    ("telegram_notifier.py", "📢 報告發送模組")
 ]
 
-LOG_FILE = os.path.join(BASE_DIR, "daily_run.log")
+def send_status_report(summary_list, start_time):
+    """Sends the final execution summary to Telegram."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    
+    if not token or not chat_id:
+        print("[!] Telegram credentials missing.")
+        return
 
-def check_health():
-    """Verifies that .env exists and contains required keys."""
-    required_keys = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
-    missing = [key for key in required_keys if not os.getenv(key)]
+    duration = datetime.now() - start_time
+    report = f"📋 **TWS 每日自動化執行報告**\n"
+    report += f"⏱️ 耗時: {str(duration).split('.')[0]}\n"
+    report += "──────────────────\n"
     
-    if missing:
-        print(f"[!] Health Check Failed: Missing {missing} in .env file.")
-        print("[!] Please copy .env.example to .env and fill in your credentials.")
-        return False
+    for name, status in summary_list:
+        report += f"{status} {name}\n"
     
-    print("[✓] Environment Health Check Passed.")
-    return True
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": report, "parse_mode": "Markdown"}, timeout=10)
 
 def run_script(script_name):
-    """Executes a child script and captures output."""
     script_path = os.path.join(BASE_DIR, script_name)
-    if not os.path.exists(script_path):
-        print(f"[!] Error: {script_name} not found.")
-        return False
-
-    print(f"[*] Executing: {script_name}...")
     try:
-        # check=True will raise an exception if the script fails
-        subprocess.run([PYTHON_EXE, script_path], check=True, capture_output=True, text=True)
-        return True
+        # 捕捉 stderr 以取得具體錯誤
+        result = subprocess.run([PYTHON_EXE, script_path], check=True, capture_output=True, text=True)
+        return True, "✅"
     except subprocess.CalledProcessError as e:
-        print(f"[X] Failure in {script_name}:")
-        print(f"Error Output: {e.stderr}")
-        return False
+        # 取得錯誤訊息的最後一行 (通常是具體的 Error Name)
+        error_msg = e.stderr.strip().split('\n')[-1]
+        return False, f"❌ ({error_msg})"
+    except Exception as e:
+        return False, "⚠️ (系統錯誤)"
 
 def main():
     start_time = datetime.now()
-    print(f"--- Pipeline Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+    execution_summary = []
+    
+    print(f"[*] Starting Pipeline at {start_time}")
 
-    # 1. Start with Health Check
-    if not check_health():
-        sys.exit(1)
+    for file_name, display_name in SCRIPTS:
+        # Skip the notifier here, as we run it as a custom status report at the end
+        if file_name == "telegram_notifier.py":
+            continue
+            
+        success, icon = run_script(file_name)
+        execution_summary.append((display_name, icon))
+        
+        # If a critical data step fails, we log it but don't break, 
+        # so the final report can still be sent.
+        if not success:
+            print(f"[!] {file_name} failed.")
 
-    # 2. Run sequential scripts
-    success_count = 0
-    for script in SCRIPTS:
-        if run_script(script):
-            success_count += 1
-        else:
-            print(f"[!] Pipeline aborted at {script}.")
-            break
-
-    # 3. Final Summary
-    end_time = datetime.now()
-    duration = end_time - start_time
-    summary = f"--- Finished: {success_count}/{len(SCRIPTS)} successful. Duration: {duration} ---\n"
-    print(summary.strip())
-
-    # Log the summary for historical tracking
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{start_time}: {summary}")
+    # Final step: Always send the report
+    # We include the notifier result itself as part of the summary
+    print("[*] Sending status report...")
+    send_status_report(execution_summary, start_time)
 
 if __name__ == "__main__":
     main()

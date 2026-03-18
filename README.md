@@ -1,3 +1,35 @@
+# 📈 Stock Analysis & AI Trading Framework
+
+A professional collection of stock analysis tools, AI trading algorithms, and automated screening pipelines. This repository supports both machine learning research and rule-based technical analysis for global and Taiwan markets.
+
+## 🌟 Key Features
+
+* **TWS Market Automation**: A complete daily pipeline for the Taiwan Stock Exchange (TWSE) including data fetching, trend screening, and Telegram reporting.
+* **AI Trading Algorithms**: Implementations of triple-barrier labeling and financial time series forecasting.
+* **Broker Integration**: Real-time connectivity with Moomoo API and database persistence via Supabase.
+* **Technical Screening**: Specialized filters for MA5, MA20, and the MA120 "Life Line" trend identification.
+
+---
+
+## 🇹🇼 Taiwan Stock Analysis (TWS) Pipeline
+
+The `tws/` directory contains an automated daily workflow designed to find high-growth "Leading Tickers" while strictly adhering to investment discipline.
+
+### 📂 Directory Structure
+```text
+tws/
+├── data/
+│   ├── tickers/          # Daily Top 20 high-volume lists
+│   ├── ohlcv/            # Cleaned historical price data
+│   └── company/          # Mapping of Names, Industries, and PE
+├── master_run.py           # Central automation controller
+├── get_company_info.py     # Updates company fundamentals (PE, Sector)
+├── init_historical_data.py  # Syncs 250-day price history (Excludes ETFs)
+├── current_trending.py     # Multi-MA trend screening engine
+└── telegram_notifier.py    # Telegram reporting with real-time news
+```
+
+
 # Purpose
 
 A collection of AI trading algorithms and tools for automated trading strategies. The project includes implementations for:

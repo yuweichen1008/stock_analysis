@@ -1,4 +1,4 @@
-env
+.venv
 *.hdf5
 *.npz.env
 .DS_Store
