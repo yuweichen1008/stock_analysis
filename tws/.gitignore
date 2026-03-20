@@ -1,5 +1,0 @@
-.env
-data/
-*.csv
-daily_run.log
-__pycache__/
