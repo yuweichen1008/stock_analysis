@@ -1,6 +1,9 @@
 import os
+import io
 import pandas as pd
 import yfinance as yf
+import matplotlib.pyplot as plt
+import seaborn as sns
 from tws.models import StockAI
 from tws.utils import TelegramTool
 from dotenv import load_dotenv
@@ -63,3 +66,25 @@ def send_stock_report(base_dir):
         )
     
     tool.send_markdown(report)
+
+    # Build heatmap by industry/category for today's trending
+    try:
+        df_trend = pd.read_csv(trending_file, dtype={'ticker': str})
+        if not df_trend.empty:
+            # merge with mapping to get category
+            merged = df_trend.merge(mapping_df, left_on='ticker', right_on='ticker', how='left')
+            cat_counts = merged['industry'].value_counts().reset_index()
+            cat_counts.columns = ['industry', 'count']
+            if not cat_counts.empty:
+                plt.figure(figsize=(6, max(2, len(cat_counts)*0.5)))
+                sns.barplot(y='industry', x='count', data=cat_counts)
+                plt.title('Trending by Industry')
+                plt.tight_layout()
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png')
+                buf.seek(0)
+                caption = 'Heatmap: 今日熱門類別分佈'
+                tool.send_photo(buf.read(), caption=caption)
+                plt.close()
+    except Exception:
+        pass

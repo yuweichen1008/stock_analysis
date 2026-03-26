@@ -10,3 +10,8 @@ scikit-learn
 packaging
 python-telegram-bot>=13.0
 pyyaml
+matplotlib
+seaborn
+vaderSentiment
+google-cloud-bigquery
+pytest
