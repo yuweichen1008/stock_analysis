@@ -7,6 +7,15 @@ import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
+def _last_trading_date(ref: datetime = None) -> datetime:
+    """Most recent Mon–Fri date (no TW holiday calendar)."""
+    d = (ref or datetime.now()).date()
+    if d.weekday() == 5:
+        d -= timedelta(days=1)
+    elif d.weekday() == 6:
+        d -= timedelta(days=2)
+    return datetime.combine(d, datetime.min.time())
+
 class TaiwanStockEngine:
     def __init__(self, base_dir):
         self.base_dir = base_dir
@@ -36,7 +45,14 @@ class TaiwanStockEngine:
 
     def sync_daily_data(self):
         """同步數據並確保產生清單檔案，解決 Scanned: 0 問題"""
-        today_str = datetime.now().strftime("%Y%m%d")
+        now = datetime.now()
+        trading_dt = _last_trading_date(now)
+        today_str  = trading_dt.strftime("%Y%m%d")
+
+        if now.date().weekday() >= 5:
+            lag = (now.date() - trading_dt.date()).days
+            print(f"[!] 今日非交易日 ({now.strftime('%A')})，使用最近交易日 {trading_dt.strftime('%Y-%m-%d')} (前 {lag} 天)")
+
         ticker_file = os.path.join(self.tickers_dir, f"top20_{today_str}.csv")
         tickers = []
 
@@ -69,13 +85,25 @@ class TaiwanStockEngine:
     def _download_ohlcv(self, ticker):
         """下載 250 日數據並存儲 CSV"""
         try:
-            df = yf.download(f"{ticker}.TW", period="250d", progress=False)
-            if not df.empty:
-                start, end = df.index[0].strftime("%Y%m%d"), df.index[-1].strftime("%Y%m%d")
-                for old_f in glob.glob(os.path.join(self.ohlcv_dir, f"{ticker}_*.csv")):
-                    os.remove(old_f)
-                df.to_csv(os.path.join(self.ohlcv_dir, f"{ticker}_{start}_{end}.csv"))
-        except: pass
+            # Small sleep avoids yfinance thread-safety issues where concurrent
+            # requests can return the same cached DataFrame for different tickers.
+            time.sleep(0.3)
+            tick = yf.Ticker(f"{ticker}.TW")
+            df = tick.history(period="250d", auto_adjust=True)
+            if df.empty:
+                return
+            # yfinance Ticker.history() returns a plain (non-MultiIndex) DataFrame
+            # with columns Open/High/Low/Close/Volume — safe for concurrent use.
+            df.index = df.index.tz_localize(None)
+            start = df.index[0].strftime("%Y%m%d")
+            end   = df.index[-1].strftime("%Y%m%d")
+            for old_f in glob.glob(os.path.join(self.ohlcv_dir, f"{ticker}_*.csv")):
+                os.remove(old_f)
+            df[['Open', 'High', 'Low', 'Close', 'Volume']].to_csv(
+                os.path.join(self.ohlcv_dir, f"{ticker}_{start}_{end}.csv")
+            )
+        except Exception:
+            pass
 
     def fetch_stock_info(self, ticker):
         """強化抓取邏輯：解決 ROE/PE N/A 問題"""

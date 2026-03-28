@@ -1,10 +1,40 @@
+import re
 import requests
 import xml.etree.ElementTree as ET
 import os
 import logging
+import pandas as pd
+from datetime import datetime, timedelta
 from typing import List
 
 logger = logging.getLogger(__name__)
+
+
+def get_last_trading_date(ref: datetime = None) -> datetime:
+    """
+    Return the most recent Taiwan Stock Exchange trading day.
+
+    Rules applied (simple weekday-only, no TW holiday calendar):
+      - Monday–Friday  → same day
+      - Saturday       → previous Friday
+      - Sunday         → previous Friday (2 days back)
+
+    Pass ref=<datetime> to anchor from a specific point in time instead
+    of 'now' (useful for back-running the pipeline with a fixed date).
+    """
+    d = (ref or datetime.now()).date()
+    # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+    if d.weekday() == 5:        # Saturday
+        d -= timedelta(days=1)
+    elif d.weekday() == 6:      # Sunday
+        d -= timedelta(days=2)
+    return datetime.combine(d, datetime.min.time())
+
+
+def is_trading_day(ref: datetime = None) -> bool:
+    """Return True if ref (default: now) falls on a Mon–Fri trading day."""
+    d = (ref or datetime.now()).date()
+    return d.weekday() < 5
 
 
 class TelegramTool:
@@ -260,3 +290,101 @@ def fetch_twse_short_interest(date_str: str):
         except Exception as e:
             logger.debug('short interest fetch failed for %s: %s', url, e)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Full-market price data (for heatmap + trending industry)
+# ---------------------------------------------------------------------------
+
+def _twse_change_direction(html: str) -> int:
+    """TWSE encodes direction in HTML: color:red → +1 (up), color:green → -1 (down)."""
+    if 'color:red'   in html: return  1
+    if 'color:green' in html: return -1
+    return 0
+
+
+def fetch_twse_all_prices(date_str: str) -> pd.DataFrame:
+    """
+    Fetch ALL TWSE regular-stock closing prices for one trading day.
+
+    Uses the MI_INDEX?type=ALL endpoint which returns ~1000+ rows in table[8]
+    (每日收盤行情).  Filters to 4-digit numeric ticker codes that don't start
+    with '00' (removes ETFs, warrants, preferred shares, TDRs).
+
+    Columns returned:
+      ticker, name, open, high, low, close, volume (shares),
+      value (NTD), change_pct (%), is_limit_up, is_limit_down
+    """
+    url = (
+        "https://www.twse.com.tw/exchangeReport/MI_INDEX"
+        f"?response=json&type=ALL&date={date_str}"
+    )
+    try:
+        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
+        data = r.json()
+        if data.get('stat') != 'OK':
+            logger.warning("fetch_twse_all_prices: stat=%s for %s", data.get('stat'), date_str)
+            return pd.DataFrame()
+
+        # table[8] = 每日收盤行情(全部)
+        price_table = next(
+            (t for t in data.get('tables', []) if '每日收盤行情' in t.get('title', '')),
+            None,
+        )
+        if not price_table:
+            return pd.DataFrame()
+
+        def _p(s):
+            s = str(s).replace(',', '').strip()
+            try:
+                v = float(s)
+                return v if v != 0 else None
+            except ValueError:
+                return None
+
+        def _i(s) -> int:
+            try:
+                return int(str(s).replace(',', '').strip())
+            except (ValueError, TypeError):
+                return 0
+
+        records = []
+        for row in price_table.get('data', []):
+            try:
+                ticker = row[0].strip()
+                if not re.fullmatch(r'[1-9]\d{3}', ticker):
+                    continue                    # skip ETFs, warrants, TDRs
+
+                close = _p(row[8])
+                if close is None:
+                    continue
+
+                direction  = _twse_change_direction(str(row[9]))
+                change_amt = abs(_p(row[10]) or 0.0)
+                prev_close = close - direction * change_amt
+                change_pct = (
+                    direction * change_amt / prev_close * 100
+                    if prev_close > 0 else 0.0
+                )
+
+                records.append({
+                    'ticker':        ticker,
+                    'name':          row[1].strip(),
+                    'open':          _p(row[5]),
+                    'high':          _p(row[6]),
+                    'low':           _p(row[7]),
+                    'close':         close,
+                    'volume':        _i(row[2]),
+                    'value':         _i(row[4]),
+                    'change_pct':    round(change_pct, 2),
+                    'is_limit_up':   change_pct >= 9.5,
+                    'is_limit_down': change_pct <= -9.5,
+                })
+            except (IndexError, TypeError):
+                continue
+
+        return pd.DataFrame(records)
+
+    except Exception as e:
+        logger.exception("fetch_twse_all_prices failed: %s", e)
+        return pd.DataFrame()

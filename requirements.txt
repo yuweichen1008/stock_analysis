@@ -12,6 +12,8 @@ python-telegram-bot>=13.0
 pyyaml
 matplotlib
 seaborn
+plotly
+kaleido
 vaderSentiment
 google-cloud-bigquery
 pytest

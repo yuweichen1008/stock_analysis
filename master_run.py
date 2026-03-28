@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # 統一模組化導入
 from tws.core import TaiwanStockEngine
 from tws.taiwan_trending import run_taiwan_trending
-from tws.telegram_notifier import send_stock_report
+from tws.telegram_notifier import send_stock_report, send_market_overview
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -28,8 +28,12 @@ def main():
     print("[Step 3] 同步 Yahoo Finance 深度數據 (含過期檢查)...")
     engine.update_mapping_with_trending()
 
-    # Step 4: 發送 Telegram 報告
-    print("[Step 4] 執行 AI 分析並發送報告...")
+    # Step 4a: 全市場總覽 (漲跌停 + 產業排行 + 大盤熱力圖)
+    print("[Step 4a] 發送市場總覽與熱力圖...")
+    send_market_overview(BASE_DIR)
+
+    # Step 4b: 訊號股個別分析報告
+    print("[Step 4b] 執行 AI 分析並發送訊號股報告...")
     send_stock_report(BASE_DIR)
 
     print(f"✅ 流程完成。耗時: {datetime.now() - start_time}")
