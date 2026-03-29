@@ -8,6 +8,7 @@ import seaborn as sns
 import plotly.graph_objects as go
 from tws.models import StockAI
 from tws.utils import (TelegramTool, fetch_twse_all_prices,
+                        fetch_google_news_many,
                         get_last_trading_date, is_trading_day)
 from dotenv import load_dotenv
 
@@ -222,6 +223,117 @@ def generate_industry_heatmap(df_trend, mapping_df, universe_df=None):
         return None
 
 
+def generate_signal_board(universe_df: pd.DataFrame, mapping_df: pd.DataFrame):
+    """
+    Horizontal RSI bar chart for all tracked tickers — replaces the sparse treemap.
+
+    Color zones:
+      🟢 Signal      (is_signal=True)              → bright green
+      🟠 Watch zone  (RSI 35–55, price > MA120)    → orange
+      🔴 Below MA120 (life line broken)             → red
+      ⬜ Neutral     (RSI ≥ 55)                    → slate gray
+
+    Sorted by RSI ascending so the most oversold tickers appear at the top.
+    Each bar is annotated with Bias% and score (for signal stocks).
+    Returns PNG bytes or None.
+    """
+    try:
+        df = universe_df.copy()
+
+        # Merge display names
+        if not mapping_df.empty and 'ticker' in mapping_df.columns and 'name' in mapping_df.columns:
+            df = df.merge(mapping_df[['ticker', 'name']], on='ticker', how='left')
+            df['label'] = df['ticker'] + ' ' + df['name'].fillna(df['ticker'])
+        else:
+            df['label'] = df['ticker']
+
+        df['RSI']       = pd.to_numeric(df.get('RSI'),   errors='coerce')
+        df['MA120']     = pd.to_numeric(df.get('MA120'), errors='coerce')
+        df['price']     = pd.to_numeric(df.get('price'), errors='coerce')
+        df['bias']      = pd.to_numeric(df.get('bias'),  errors='coerce')
+        df['score']     = pd.to_numeric(df.get('score', 0), errors='coerce').fillna(0)
+        df['is_signal'] = df['is_signal'].astype(str).str.lower().isin(['true', '1', 'yes'])
+
+        df = df.dropna(subset=['RSI']).sort_values('RSI')
+        if df.empty:
+            return None
+
+        def _color(row):
+            if row['is_signal']:
+                return '#00e676'   # bright green — active signal
+            price = row['price'] if pd.notna(row['price']) else None
+            ma120 = row['MA120'] if pd.notna(row['MA120']) else None
+            if price is not None and ma120 is not None and price <= ma120:
+                return '#ef5350'   # red — below life line
+            if row['RSI'] < 50:
+                return '#ffa726'   # orange — watch zone
+            return '#78909c'       # slate — neutral
+
+        def _annot(row):
+            parts = []
+            if pd.notna(row['bias']):
+                parts.append(f"Bias {row['bias']:.1f}%")
+            if row['is_signal']:
+                parts.append(f"⭐{row['score']:.1f}")
+            return '  '.join(parts)
+
+        colors      = [_color(r) for _, r in df.iterrows()]
+        annotations = [_annot(r) for _, r in df.iterrows()]
+        n_signal    = int(df['is_signal'].sum())
+        n_total     = len(df)
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df['RSI'],
+            y=df['label'],
+            orientation='h',
+            marker_color=colors,
+            text=annotations,
+            textposition='outside',
+            textfont=dict(color='#cccccc', size=10),
+            hovertemplate='<b>%{y}</b><br>RSI: %{x:.1f}<extra></extra>',
+        ))
+
+        fig.add_vline(x=35, line=dict(color='#00e676', width=1.2, dash='dash'),
+                      annotation_text='Oversold 35',
+                      annotation_font=dict(color='#00e676', size=10),
+                      annotation_position='top right')
+        fig.add_vline(x=50, line=dict(color='#ffa726', width=1, dash='dot'),
+                      annotation_text='Mid 50',
+                      annotation_font=dict(color='#ffa726', size=10),
+                      annotation_position='top right')
+
+        bar_h      = max(22, min(38, 560 // max(n_total, 1)))
+        chart_h    = max(280, n_total * bar_h + 130)
+        date_s     = pd.Timestamp.now().strftime('%Y-%m-%d')
+
+        fig.update_layout(
+            title=dict(
+                text=f'TWS Signal Board — {n_signal} 訊號 / {n_total} 追蹤中  ({date_s})',
+                font=dict(color='#eeeeee', size=13),
+                x=0.5, xanchor='center',
+            ),
+            xaxis=dict(
+                title='RSI(14)', range=[0, 115],
+                gridcolor='#2a2a2a',
+                tickfont=dict(color='#aaa'),
+                titlefont=dict(color='#aaa'),
+            ),
+            yaxis=dict(tickfont=dict(color='#cccccc', size=10), automargin=True),
+            template='plotly_dark',
+            paper_bgcolor='#0d1117',
+            plot_bgcolor='#0d1117',
+            width=900,
+            height=chart_h,
+            margin=dict(l=10, r=130, t=55, b=30),
+            showlegend=False,
+        )
+
+        return fig.to_image(format='png')
+    except Exception:
+        return None
+
+
 def clean_display(val, is_pct=False):
     if val is None or str(val) == "N/A" or pd.isna(val): return "N/A"
     try:
@@ -231,19 +343,21 @@ def clean_display(val, is_pct=False):
     except: return "N/A"
 
 def _send_signal_map(base_dir, tool, mapping_df, df_trend):
-    """Attach universe signal map heatmap — called by send_stock_report."""
+    """Send signal board (RSI bar chart) for all tracked tickers — called by send_stock_report."""
     try:
         universe_file = os.path.join(base_dir, "data", "company", "universe_snapshot.csv")
         universe_df   = pd.read_csv(universe_file, dtype={'ticker': str}) if os.path.exists(universe_file) else None
-        if df_trend.empty and (universe_df is None or universe_df.empty):
+        # Use universe snapshot if available; else fall back to today's signals only
+        source_df = universe_df if (universe_df is not None and not universe_df.empty) else df_trend
+        if source_df is None or source_df.empty:
             return
-        heatmap_bytes = generate_industry_heatmap(df_trend, mapping_df, universe_df=universe_df)
-        if heatmap_bytes:
+        board_bytes = generate_signal_board(source_df, mapping_df)
+        if board_bytes:
             n_sig   = len(df_trend)
-            n_total = len(universe_df) if universe_df is not None else n_sig
+            n_total = len(source_df)
             tool.send_photo(
-                heatmap_bytes,
-                caption=f'📊 TWS Signal Map — {n_sig} 訊號 / {n_total} 追蹤中',
+                board_bytes,
+                caption=f'📊 TWS Signal Board — {n_sig} 訊號 / {n_total} 追蹤中',
             )
     except Exception:
         pass
@@ -483,6 +597,119 @@ def generate_market_heatmap(price_df: pd.DataFrame, company_df: pd.DataFrame):
         return None
 
 
+def generate_sector_zoom(price_df: pd.DataFrame, company_df: pd.DataFrame, sector_name: str):
+    """
+    Single-sector focused treemap at 1000×600 px.
+
+    Same red/green % change color scheme as generate_market_heatmap, but zoomed
+    into one industry so individual stock labels are legible without pinch-zooming.
+    Returns PNG bytes or None.
+    """
+    try:
+        merged = price_df.merge(
+            company_df[['ticker', 'name', 'industry']].rename(columns={'name': 'co_name'}),
+            on='ticker', how='left',
+        )
+        merged['industry'] = merged['industry'].fillna('其他').str.strip()
+        sector = merged[merged['industry'] == sector_name].copy()
+
+        if len(sector) < 2:
+            return None
+
+        sector['change_pct']   = pd.to_numeric(sector['change_pct'], errors='coerce').fillna(0)
+        sector['value']        = pd.to_numeric(sector['value'],      errors='coerce').fillna(0)
+        sector['display_name'] = sector['co_name'].where(sector['co_name'].notna(), sector['name'])
+        sector['tile_size']    = np.log1p(sector['value'] / 1_000_000).clip(lower=0.3)
+
+        n_up   = int((sector['change_pct'] > 0).sum())
+        n_down = int((sector['change_pct'] < 0).sum())
+        avg_ch = sector['change_pct'].mean()
+
+        labels  = [sector_name] + sector['ticker'].tolist()
+        parents = ['']          + [sector_name] * len(sector)
+        values  = [0]           + sector['tile_size'].tolist()
+        colors  = [np.nan]      + sector['change_pct'].clip(-10, 10).tolist()
+
+        def _tile_text(row):
+            arrow = '▲' if row['change_pct'] > 0 else ('▼' if row['change_pct'] < 0 else '─')
+            limit = ' 🔥' if row['is_limit_up'] else (' 🧊' if row['is_limit_down'] else '')
+            return (
+                f"<b>{row['ticker']}</b><br>{row['display_name']}<br>"
+                f"{arrow}{row['change_pct']:+.1f}%{limit}"
+            )
+
+        tile_texts = [f'<b>{sector_name}</b>'] + [_tile_text(r) for _, r in sector.iterrows()]
+
+        colorscale = [
+            [0.00, '#b71c1c'], [0.25, '#ef5350'], [0.43, '#ffcdd2'],
+            [0.50, '#424242'], [0.57, '#c8e6c9'], [0.75, '#43a047'], [1.00, '#00e676'],
+        ]
+
+        date_s = get_last_trading_date().strftime('%Y-%m-%d')
+        title  = (
+            f'{sector_name}  {date_s}  avg {avg_ch:+.2f}%  '
+            f'▲{n_up} ▼{n_down}  ({len(sector)} stocks)'
+        )
+
+        fig = go.Figure(go.Treemap(
+            labels=labels,
+            parents=parents,
+            values=values,
+            text=tile_texts,
+            textinfo='text',
+            textfont=dict(size=13, color='white', family='sans-serif'),
+            marker=dict(
+                colors=colors,
+                colorscale=colorscale,
+                cmin=-10, cmax=10,
+                showscale=False,
+                line=dict(color='#111', width=0.8),
+                pad=dict(t=20, l=3, r=3, b=3),
+            ),
+            root_color='#111111',
+            pathbar=dict(visible=False),
+        ))
+
+        fig.update_layout(
+            title=dict(text=title, font=dict(color='#eee', size=14), x=0.5, xanchor='center'),
+            template='plotly_dark',
+            paper_bgcolor='#111111',
+            width=1000, height=600,
+            margin=dict(l=8, r=8, t=50, b=8),
+        )
+
+        return fig.to_image(format='png')
+    except Exception:
+        return None
+
+
+def send_sector_zooms(price_df: pd.DataFrame, company_df: pd.DataFrame,
+                      tool: TelegramTool, top_n: int = 3):
+    """
+    Pick the top N sectors by total trading value and send a focused heatmap for each.
+    Helps users drill into the sectors driving today's market.
+    """
+    try:
+        merged = price_df.merge(company_df[['ticker', 'industry']], on='ticker', how='left')
+        merged['industry'] = merged['industry'].fillna('其他').str.strip()
+        merged['value']    = pd.to_numeric(merged['value'], errors='coerce').fillna(0)
+
+        top_sectors = (
+            merged.groupby('industry')['value']
+            .sum()
+            .sort_values(ascending=False)
+            .head(top_n)
+            .index.tolist()
+        )
+
+        for sector in top_sectors:
+            img = generate_sector_zoom(price_df, company_df, sector)
+            if img:
+                tool.send_photo(img, caption=f'🔍 {sector} — 產業細部')
+    except Exception:
+        pass
+
+
 def build_industry_trend_text(price_df: pd.DataFrame, company_df: pd.DataFrame) -> str:
     """
     Build a Telegram-ready text summary:
@@ -555,6 +782,107 @@ def build_industry_trend_text(price_df: pd.DataFrame, company_df: pd.DataFrame) 
     return '\n'.join(lines)
 
 
+def build_investment_intel(price_df: pd.DataFrame, company_df: pd.DataFrame,
+                           universe_df=None) -> str:
+    """
+    Build an investment intelligence Telegram message with three sections:
+
+    1. 漲停板 stocks with latest news headline (momentum context)
+    2. Near-signal watchlist: price > MA120, RSI 35–50, Bias < -1% (not yet triggered)
+    3. Strongest sectors for tomorrow + intra-day follow-through idea
+
+    Returns a Telegram markdown string (empty string if nothing notable).
+    """
+    lines = []
+    date_s = get_last_trading_date().strftime('%Y-%m-%d')
+
+    # ── Merge price with company names ────────────────────────────────────────
+    merged = price_df.merge(
+        company_df[['ticker', 'name', 'industry']].rename(columns={'name': 'co_name'}),
+        on='ticker', how='left',
+    )
+    merged['change_pct'] = pd.to_numeric(merged['change_pct'], errors='coerce').fillna(0)
+    merged['value']      = pd.to_numeric(merged['value'],      errors='coerce').fillna(0)
+    merged['industry']   = merged['industry'].fillna('其他').str.strip()
+
+    # ── 1. Limit-up stocks with news ─────────────────────────────────────────
+    lu_df = merged[merged['is_limit_up']].sort_values('value', ascending=False).head(8)
+    if not lu_df.empty:
+        lines.append(f'🔥 *漲停板動能 ({date_s})*')
+        for _, r in lu_df.iterrows():
+            ticker   = str(r['ticker'])
+            display  = str(r.get('co_name') or r.get('name', ticker))
+            news     = fetch_google_news_many(ticker, display, days=3, max_items=1)
+            headline = news[0] if news else '暫無重大新聞'
+            lines.append(f"  *{ticker} {display}*  +{r['change_pct']:.1f}%")
+            lines.append(f"  📰 {headline}")
+        lines.append('')
+
+    # ── 2. Near-signal watchlist (from universe_snapshot) ────────────────────
+    if universe_df is not None and not universe_df.empty:
+        u = universe_df.copy()
+        u['RSI']       = pd.to_numeric(u.get('RSI'),   errors='coerce')
+        u['bias']      = pd.to_numeric(u.get('bias'),  errors='coerce')
+        u['price']     = pd.to_numeric(u.get('price'), errors='coerce')
+        u['MA120']     = pd.to_numeric(u.get('MA120'), errors='coerce')
+        u['is_signal'] = u['is_signal'].astype(str).str.lower().isin(['true', '1', 'yes'])
+
+        near = u[
+            (~u['is_signal']) &
+            (u['price'] > u['MA120']) &
+            (u['RSI'] >= 35) & (u['RSI'] < 50) &
+            (u['bias'] < -1.0) & (u['bias'] > -12.0)
+        ].sort_values('RSI').head(5)
+
+        if not near.empty:
+            near = near.merge(company_df[['ticker', 'name']], on='ticker', how='left')
+            lines.append('👀 *明日觀察名單 (接近訊號)*')
+            lines.append('_條件: 價>MA120  RSI 35-50  Bias<-1%_')
+            for _, r in near.iterrows():
+                name_val = str(r.get('name', r['ticker']))
+                lines.append(
+                    f"  *{r['ticker']} {name_val}*  "
+                    f"RSI {r['RSI']:.0f}  Bias {r['bias']:.1f}%"
+                )
+            lines.append('')
+
+    # ── 3. Momentum sectors & intra-day idea ─────────────────────────────────
+    ind_stats = (
+        merged.groupby('industry')
+        .agg(
+            avg_ch=('change_pct', 'mean'),
+            total_val=('value', 'sum'),
+            n_lu=('is_limit_up', 'sum'),
+            n_stocks=('ticker', 'count'),
+        )
+        .sort_values('avg_ch', ascending=False)
+    )
+
+    top3 = ind_stats.head(3)
+    if not top3.empty:
+        lines.append('🚀 *明日強勢產業展望*')
+        for ind_name, r in top3.iterrows():
+            lu_tag = f'  🔥{int(r["n_lu"])}漲停' if r['n_lu'] > 0 else ''
+            lines.append(
+                f"  ▲ *{ind_name}*  avg {r['avg_ch']:+.2f}%  "
+                f"成交{r['total_val'] / 1e8:.0f}億{lu_tag}"
+            )
+        lines.append('')
+
+    # Intra-day idea: strongest sector with limit-ups = best momentum follow-through candidate
+    hot = ind_stats[ind_stats['n_lu'] > 0].head(1)
+    if not hot.empty:
+        hot_name = hot.index[0]
+        lines.append('💡 *當沖參考*')
+        lines.append(
+            f'  {hot_name} 今日多檔漲停，明日開盤留意跳空高開後的'
+            f'第一根回測支撐 (前收盤±0.5%) 為潛在進場點'
+        )
+        lines.append('  _風控: 以前日收盤價為停損基準，破則出場_')
+
+    return '\n'.join(lines)
+
+
 def send_market_overview(base_dir: str):
     """
     Fetch full TWSE market data → send industry trend summary + full heatmap to Telegram.
@@ -606,5 +934,24 @@ def send_market_overview(base_dir: str):
                     '_點擊開啟 → 放大查看各產業細節_'
                 ),
             )
+    except Exception:
+        pass
+
+    # 3. Sector zoom charts — top 3 sectors by trading value, sent as photos
+    try:
+        send_sector_zooms(price_df, company_df, tool, top_n=3)
+    except Exception:
+        pass
+
+    # 4. Investment intelligence — limit-up news, near-signal watchlist, intra-day idea
+    try:
+        universe_file = os.path.join(base_dir, 'data', 'company', 'universe_snapshot.csv')
+        universe_df   = (
+            pd.read_csv(universe_file, dtype={'ticker': str})
+            if os.path.exists(universe_file) else None
+        )
+        intel_text = build_investment_intel(price_df, company_df, universe_df)
+        if intel_text.strip():
+            tool.send_markdown(intel_text)
     except Exception:
         pass
