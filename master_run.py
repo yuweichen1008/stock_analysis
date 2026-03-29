@@ -6,15 +6,16 @@ from dotenv import load_dotenv
 from tws.core import TaiwanStockEngine
 from tws.taiwan_trending import run_taiwan_trending
 from tws.telegram_notifier import send_stock_report, send_market_overview
+from us.core import USStockEngine
+from us.us_trending import run_us_trending
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-def main():
-    start_time = datetime.now()
+def run_tws_pipeline():
     engine = TaiwanStockEngine(BASE_DIR)
 
-    print(f"🚀 TWS 自動化流程啟動: {start_time}")
+    print(f"🚀 TWS 自動化流程啟動")
 
     # Step 1: 數據同步 (取代原本被刪除的 init_history_crawler)
     # 它會抓取今日 Top 20 並下載 K 線，存入 data/ohlcv
@@ -35,6 +36,25 @@ def main():
     # Step 4b: 訊號股個別分析報告
     print("[Step 4b] 執行 AI 分析並發送訊號股報告...")
     send_stock_report(BASE_DIR)
+
+def run_us_pipeline():
+    print(f"🚀 US 自動化流程啟動")
+    us_engine = USStockEngine(BASE_DIR)
+    
+    # Step 1: Sync S&P 500 tickers and download historical data
+    print("[Step 1] Syncing US stock data...")
+    us_engine.sync_daily_data()
+
+    # Step 2: Run trending analysis for US stocks
+    print("[Step 2] Running US stock analysis...")
+    run_us_trending(BASE_DIR)
+
+
+def main():
+    start_time = datetime.now()
+    
+    run_tws_pipeline()
+    run_us_pipeline()
 
     print(f"✅ 流程完成。耗時: {datetime.now() - start_time}")
 

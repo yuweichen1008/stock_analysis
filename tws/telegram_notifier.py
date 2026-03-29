@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
 from tws.models import StockAI
-from tws.utils import TelegramTool, fetch_twse_all_prices, get_last_trading_date, is_trading_day
+from tws.utils import (TelegramTool, fetch_twse_all_prices,
+                        get_last_trading_date, is_trading_day)
 from dotenv import load_dotenv
 
 
@@ -229,91 +230,130 @@ def clean_display(val, is_pct=False):
         return f"{f:.2f}" + ("%" if is_pct else "")
     except: return "N/A"
 
-def send_stock_report(base_dir):
-    load_dotenv(os.path.join(base_dir, ".env"))
-    mapping_file = os.path.join(base_dir, "data", "company", "company_mapping.csv")
-    trending_file = os.path.join(base_dir, "current_trending.csv")
-    
-    mapping_df = pd.read_csv(mapping_file, dtype={'ticker': str})
-    
-    # 優先顯示今日熱門，若無則顯示 ROE 最強的前 5 檔
-    if os.path.exists(trending_file):
-        tickers = pd.read_csv(trending_file, dtype={'ticker': str})['ticker'].head(10).tolist()
-    else:
-        tickers = mapping_df[mapping_df['roe'] != 'N/A'].sort_values('roe', ascending=False)['ticker'].head(5).tolist()
-
-    mapping = mapping_df.set_index('ticker').to_dict('index')
-    tool = TelegramTool(os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
-    report = f"🚀 **台股 AI 深度分析報告**\n"
-    report += "--------------------------------\n"
-
-    # Send the header first, then one block per stock
-    tool.send_markdown(report)
-
-    for t in tickers:
-        info = mapping.get(t, {})
-
-        # Fetch OHLCV (need full bar data for candlestick + AI model)
-        ohlcv = None
-        curr_p, pred_p = "N/A", "N/A"
-        try:
-            ohlcv = yf.download(f"{t}.TW", period="60d", progress=False)
-            hist = ohlcv[['Close']]
-            curr_p, pred_p = StockAI.predict_target(hist)
-        except Exception:
-            pass
-
-        # Signal colour
-        if curr_p != "N/A" and pred_p != "N/A":
-            color = "🔴 (上漲預期)" if pred_p > curr_p else "🟢 (下跌預期)"
-            price_line = f"${curr_p:.2f} | 🔮 目標: ${pred_p:.2f}"
-        else:
-            color = "⚪ (數據更新中)"
-            price_line = "N/A"
-
-        stock_report = (
-            f"🏢 **{info.get('name', '未知')}** ({t})\n"
-            f"📂 產業: {info.get('industry', '未知')}\n"
-            f"📊 **財務體質**\n"
-            f" ├ ROE: {clean_display(info.get('roe'), True)} | 負債比: {clean_display(info.get('debt_to_equity'))}\n"
-            f" └ 殖利率: {clean_display(info.get('dividend_yield'), True)} | PE: {clean_display(info.get('pe_ratio'))}\n"
-            f"💡 **市場評價**\n"
-            f" ├ 建議: {str(info.get('recommendation', 'N/A')).upper()}\n"
-            f" └ 分析師目標價: ${clean_display(info.get('target_price'))}\n"
-            f"🔮 **AI 預測 (Ledoit-Wolf)** {color}\n"
-            f" └ 目前現價: {price_line}\n"
-        )
-        tool.send_markdown(stock_report)
-
-        # Candlestick chart
-        if ohlcv is not None and not ohlcv.empty:
-            # For MA120 overlay we need a longer window — extend to 6 months if available
-            try:
-                ohlcv_long = yf.download(f"{t}.TW", period="6mo", progress=False)
-            except Exception:
-                ohlcv_long = ohlcv
-            target_p = pred_p if pred_p != "N/A" else None
-            chart_bytes = generate_candlestick_chart(t, ohlcv_long, pred_price=target_p)
-            if chart_bytes:
-                tool.send_photo(chart_bytes, caption=f"{t} — {info.get('name', '')} | Bias & AI target")
-
-    # Finviz-style industry treemap — uses full universe snapshot when available
+def _send_signal_map(base_dir, tool, mapping_df, df_trend):
+    """Attach universe signal map heatmap — called by send_stock_report."""
     try:
         universe_file = os.path.join(base_dir, "data", "company", "universe_snapshot.csv")
-        df_trend_map  = pd.read_csv(trending_file, dtype={'ticker': str}) if os.path.exists(trending_file) else pd.DataFrame()
         universe_df   = pd.read_csv(universe_file, dtype={'ticker': str}) if os.path.exists(universe_file) else None
-
-        if not df_trend_map.empty or (universe_df is not None and not universe_df.empty):
-            heatmap_bytes = generate_industry_heatmap(df_trend_map, mapping_df, universe_df=universe_df)
-            if heatmap_bytes:
-                n_signal = len(df_trend_map)
-                n_total  = len(universe_df) if universe_df is not None else n_signal
-                tool.send_photo(
-                    heatmap_bytes,
-                    caption=f'📊 TWS Signal Map — {n_signal} signal / {n_total} tracked',
-                )
+        if df_trend.empty and (universe_df is None or universe_df.empty):
+            return
+        heatmap_bytes = generate_industry_heatmap(df_trend, mapping_df, universe_df=universe_df)
+        if heatmap_bytes:
+            n_sig   = len(df_trend)
+            n_total = len(universe_df) if universe_df is not None else n_sig
+            tool.send_photo(
+                heatmap_bytes,
+                caption=f'📊 TWS Signal Map — {n_sig} 訊號 / {n_total} 追蹤中',
+            )
     except Exception:
         pass
+
+
+def send_stock_report(base_dir):
+    """
+    Send the daily TWS signal report to Telegram.
+
+    Format (one message + one image):
+      1. Actionable buy list with key metrics per signal stock
+      2. Universe signal map heatmap
+
+    No per-stock candlestick charts — subscribers only need what to buy today.
+    """
+    load_dotenv(os.path.join(base_dir, ".env"))
+    mapping_file  = os.path.join(base_dir, "data", "company", "company_mapping.csv")
+    trending_file = os.path.join(base_dir, "current_trending.csv")
+
+    if not os.path.exists(mapping_file):
+        return
+
+    mapping_df = pd.read_csv(mapping_file, dtype={'ticker': str})
+    tool       = TelegramTool(os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
+    mapping    = mapping_df.set_index('ticker').to_dict('index')
+    date_label = get_last_trading_date().strftime('%Y-%m-%d')
+
+    # ── No signal today ───────────────────────────────────────────────────────
+    if not os.path.exists(trending_file):
+        tool.send_markdown(
+            f"📭 *TWS {date_label} — 今日無訊號*\n\n"
+            "市場尚未出現均值回歸條件，建議觀望。\n"
+            "_需同時滿足: 價>MA120 + Bias<-2% + RSI<35_"
+        )
+        _send_signal_map(base_dir, tool, mapping_df, pd.DataFrame())
+        return
+
+    df_trend = pd.read_csv(trending_file, dtype={'ticker': str})
+    if df_trend.empty:
+        return
+
+    # ── Build one concise actionable message ─────────────────────────────────
+    lines = [
+        f"🚀 *TWS 今日均值回歸訊號* — {date_label}",
+        f"共 *{len(df_trend)} 檔*觸發買進條件",
+        "",
+        "🛒 *建議清單 (今收買入 → 明開賣出)*",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for rank, (_, row) in enumerate(df_trend.iterrows(), start=1):
+        t    = str(row['ticker'])
+        info = mapping.get(t, {})
+        name = info.get('name', t)
+        ind  = info.get('industry', '')
+
+        def _fmt(col, fmt='.1f'):
+            v = row.get(col)
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return 'N/A'
+            try:
+                return format(float(v), fmt)
+            except (ValueError, TypeError):
+                return str(v)
+
+        score = _fmt('score')
+        price = _fmt('price', '.1f')
+        rsi   = _fmt('RSI',   '.1f')
+        bias  = _fmt('bias',  '.1f')
+        vol   = _fmt('vol_ratio', '.1f')
+
+        # Sentiment emoji
+        sent_raw = row.get('news_sentiment', 0)
+        try:
+            s = float(sent_raw)
+            sent_e = '😊' if s > 0.1 else ('😟' if s < -0.1 else '😐')
+        except (ValueError, TypeError):
+            sent_e = '😐'
+
+        # Foreign flow
+        fnet = row.get('foreign_net')
+        try:
+            fv = float(fnet)
+            f_str = f'外資{"買" if fv > 0 else "賣"}超{abs(fv)/1000:.0f}K'
+        except (ValueError, TypeError):
+            f_str = ''
+
+        vol_str = f'量比{vol}x' if vol != 'N/A' else ''
+        details = '  '.join(filter(None, [vol_str, f_str, sent_e]))
+
+        lines.append(
+            f"*{rank}\\. {t} {name}* {ind}\n"
+            f"   ${price}  RSI {rsi}  Bias {bias}%  ⭐{score}\n"
+            f"   {details}"
+        )
+
+    lines += [
+        "",
+        "📋 *操作策略*",
+        " ├ 買入: 今日收盤前市價單",
+        " ├ 賣出: 明日開盤出場",
+        " └ 停損: 跌破 MA120 立即出場",
+        "",
+        "_均值回歸: 強勢股短線超賣 → 預期明日反彈_",
+    ]
+
+    tool.send_markdown('\n'.join(lines))
+
+    # ── Signal map (one image) ────────────────────────────────────────────────
+    _send_signal_map(base_dir, tool, mapping_df, df_trend)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +444,7 @@ def generate_market_heatmap(price_df: pd.DataFrame, company_df: pd.DataFrame):
             customdata=hover_texts,
             textinfo='text',
             hovertemplate='%{customdata}<extra></extra>',
-            textfont=dict(size=10, color='white', family='sans-serif'),
+            textfont=dict(size=12, color='white', family='sans-serif'),
             marker=dict(
                 colors=colors,
                 colorscale=colorscale,
@@ -427,15 +467,18 @@ def generate_market_heatmap(price_df: pd.DataFrame, company_df: pd.DataFrame):
         ))
 
         fig.update_layout(
-            title=dict(text=title, font=dict(color='#eee', size=13), x=0.5, xanchor='center'),
+            title=dict(text=title, font=dict(color='#eee', size=16), x=0.5, xanchor='center'),
             template='plotly_dark',
             paper_bgcolor='#111111',
-            width=1400,
-            height=900,
-            margin=dict(l=8, r=8, t=48, b=8),
+            # Logical size — exported at 2× scale → effective 4000×2400 px
+            width=2000,
+            height=1200,
+            margin=dict(l=8, r=8, t=52, b=8),
         )
 
-        return fig.to_image(format='png')
+        # scale=2 doubles pixel density: logical 2000×1200 → 4000×2400 PNG
+        # Users can pinch-zoom on mobile and see every ticker label clearly.
+        return fig.to_image(format='png', scale=2)
     except Exception:
         return None
 
@@ -448,8 +491,9 @@ def build_industry_trend_text(price_df: pd.DataFrame, company_df: pd.DataFrame) 
     - 漲停板 list (≥ 9.5% change)
     - 跌停板 list (≤ −9.5% change)
     """
+    # price_df already has 'name' (TWSE short name); rename company_df's to avoid _x/_y conflict
     merged = price_df.merge(
-        company_df[['ticker', 'name', 'industry']],
+        company_df[['ticker', 'name', 'industry']].rename(columns={'name': 'co_name'}),
         on='ticker', how='left',
     )
     merged['industry']   = merged['industry'].fillna('其他')
@@ -484,8 +528,9 @@ def build_industry_trend_text(price_df: pd.DataFrame, company_df: pd.DataFrame) 
     def _ticker_list(df, max_n=15):
         if df.empty:
             return '  (無)'
+        # 'name' = TWSE short name from price_df (preserved after merge with rename)
         parts = [f"{r['ticker']} {r['name']} {r['change_pct']:+.1f}%" for _, r in df.head(max_n).iterrows()]
-        suffix = f'\n  …及其他 {len(df)-max_n} 檔' if len(df) > max_n else ''
+        suffix = f'\n  …及其他 {len(df) - max_n} 檔' if len(df) > max_n else ''
         return '  ' + '\n  '.join(parts) + suffix
 
     date_s = get_last_trading_date().strftime('%Y-%m-%d')
@@ -544,14 +589,22 @@ def send_market_overview(base_dir: str):
     except Exception:
         pass
 
-    # 2. Full-market heatmap
+    # 2. Full-market heatmap — sent as document so Telegram keeps full resolution
+    #    Users tap the file → pinch-zoom to read any sector clearly
     try:
         heatmap_bytes = generate_market_heatmap(price_df, company_df)
         if heatmap_bytes:
-            n_lu = int(price_df['is_limit_up'].sum())
-            tool.send_photo(
+            n_lu  = int(price_df['is_limit_up'].sum())
+            n_ld  = int(price_df['is_limit_down'].sum())
+            date_s = get_last_trading_date().strftime('%Y-%m-%d')
+            tool.send_document(
                 heatmap_bytes,
-                caption=f'📊 TWSE Market Map — {len(price_df)} stocks, 🔥{n_lu} 漲停',
+                filename=f'twse_market_map_{date_s}.png',
+                caption=(
+                    f'📊 TWSE Market Map {date_s}\n'
+                    f'{len(price_df)} stocks | 🔥漲停{n_lu} | 🧊跌停{n_ld}\n'
+                    '_點擊開啟 → 放大查看各產業細節_'
+                ),
             )
     except Exception:
         pass

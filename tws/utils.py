@@ -52,15 +52,32 @@ class TelegramTool:
 
     def send_photo(self, photo_bytes, caption: str = None):
         url = f"https://api.telegram.org/bot{self.token}/sendPhoto"
-        files = {"photo": ("heatmap.png", photo_bytes)}
+        files = {"photo": ("chart.png", photo_bytes)}
         data = {"chat_id": self.chat_id}
         if caption:
             data['caption'] = caption
             data['parse_mode'] = 'Markdown'
         try:
-            requests.post(url, data=data, files=files, timeout=15)
+            requests.post(url, data=data, files=files, timeout=30)
         except Exception as e:
             logger.exception("Telegram send_photo error: %s", e)
+
+    def send_document(self, file_bytes, filename: str = "map.png", caption: str = None):
+        """
+        Send a file as a Telegram document (no compression, full resolution).
+        Users can tap → pinch-zoom to read details.
+        Max file size: 50 MB.
+        """
+        url = f"https://api.telegram.org/bot{self.token}/sendDocument"
+        files = {"document": (filename, file_bytes, "image/png")}
+        data = {"chat_id": self.chat_id}
+        if caption:
+            data['caption'] = caption
+            data['parse_mode'] = 'Markdown'
+        try:
+            requests.post(url, data=data, files=files, timeout=60)
+        except Exception as e:
+            logger.exception("Telegram send_document error: %s", e)
 
     @staticmethod
     def fetch_google_news(ticker, name):
