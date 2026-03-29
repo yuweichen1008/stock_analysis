@@ -156,6 +156,46 @@ class RobinhoodClient(BrokerClient):
             return pd.DataFrame()
 
     # ------------------------------------------------------------------
+    # Order execution
+    # ------------------------------------------------------------------
+
+    def place_order(self, ticker: str, side: str, qty: float,
+                    order_type: str = "MARKET", limit_price: float = 0.0,
+                    algo: str = "DMA") -> dict:
+        """
+        Place an order via Robinhood REST API.
+        Note: Robinhood does not support execution algos; `algo` is ignored.
+        STOP orders use stop-loss market semantics.
+        """
+        if not self._rh:
+            return {"success": False, "order_id": "", "message": "Robinhood not connected"}
+        try:
+            if algo not in ("DMA", ""):
+                logger.debug("Robinhood: algo '%s' not supported, routing as DMA", algo)
+
+            if side.upper() == "BUY":
+                if order_type.upper() == "LIMIT":
+                    result = self._rh.order_buy_limit(ticker, qty, limit_price)
+                elif order_type.upper() == "STOP":
+                    result = self._rh.order_buy_stop_loss(ticker, qty, limit_price)
+                else:
+                    result = self._rh.order_buy_market(ticker, qty)
+            else:
+                if order_type.upper() == "LIMIT":
+                    result = self._rh.order_sell_limit(ticker, qty, limit_price)
+                elif order_type.upper() == "STOP":
+                    result = self._rh.order_sell_stop_loss(ticker, qty, limit_price)
+                else:
+                    result = self._rh.order_sell_market(ticker, qty)
+
+            if result and "id" in result:
+                return {"success": True, "order_id": result["id"], "message": "Robinhood order placed"}
+            return {"success": False, "order_id": "", "message": str(result)}
+        except Exception as e:
+            logger.warning("Robinhood place_order error: %s", e)
+            return {"success": False, "order_id": "", "message": str(e)}
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

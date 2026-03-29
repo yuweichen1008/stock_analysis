@@ -102,6 +102,66 @@ class BrokerManager:
         )
 
     # ------------------------------------------------------------------
+    # Aggregated data access
+    # ------------------------------------------------------------------
+
+    def get_all_positions(self) -> pd.DataFrame:
+        """
+        Return merged positions DataFrame across all connected brokers.
+        Adds a 'broker' column. Columns: broker, ticker, qty, avg_cost, mkt_value, pnl.
+        """
+        self._ensure_connected()
+        frames = []
+        for c in self._clients:
+            df = c.get_positions()
+            if not df.empty:
+                df = df.copy()
+                df.insert(0, "broker", c.name)
+                frames.append(df)
+        if not frames:
+            return pd.DataFrame(columns=["broker", "ticker", "qty", "avg_cost", "mkt_value", "pnl"])
+        return pd.concat(frames, ignore_index=True)
+
+    def get_all_balances(self) -> list:
+        """Return list of {broker_name, **balance_dict} for each connected broker."""
+        self._ensure_connected()
+        results = []
+        for c in self._clients:
+            b = c.get_balance()
+            if b:
+                results.append({"broker": c.name, **b})
+        return results
+
+    def connected_broker_names(self) -> list:
+        """Return list of broker names that are currently connected."""
+        self._ensure_connected()
+        return [c.name for c in self._clients]
+
+    def place_order(
+        self,
+        broker_name: str,
+        ticker: str,
+        side: str,
+        qty: float,
+        order_type: str = "MARKET",
+        limit_price: float = 0.0,
+        algo: str = "DMA",
+    ) -> dict:
+        """
+        Route an order to the named broker.
+        Returns the broker's place_order() result dict.
+        """
+        self._ensure_connected()
+        for c in self._clients:
+            if c.name == broker_name:
+                return c.place_order(ticker, side, qty, order_type, limit_price, algo)
+        return {
+            "success":  False,
+            "order_id": "",
+            "message":  f"Broker '{broker_name}' not connected or not configured",
+        }
+
+    # ------------------------------------------------------------------
     # Reports
     # ------------------------------------------------------------------
 

@@ -162,6 +162,51 @@ class MoomooClient(BrokerClient):
             return pd.DataFrame()
 
     # ------------------------------------------------------------------
+    # Order execution
+    # ------------------------------------------------------------------
+
+    def place_order(self, ticker: str, side: str, qty: float,
+                    order_type: str = "MARKET", limit_price: float = 0.0,
+                    algo: str = "DMA") -> dict:
+        """
+        Place an order via Moomoo OpenD.
+        Note: Moomoo does not expose VWAP/TWAP/ADAPTIVE algos via the open API;
+        the `algo` parameter is accepted but ignored.
+        """
+        if not self._trade_ctx:
+            return {"success": False, "order_id": "", "message": "Moomoo not connected"}
+        try:
+            import moomoo as ft
+
+            trd_side = ft.TrdSide.BUY if side.upper() == "BUY" else ft.TrdSide.SELL
+            ot_map = {
+                "MARKET": ft.OrderType.MARKET,
+                "LIMIT":  ft.OrderType.NORMAL,   # NORMAL = limit in Moomoo
+                "STOP":   ft.OrderType.STOP,
+            }
+            ft_order_type = ot_map.get(order_type.upper(), ft.OrderType.MARKET)
+            price = limit_price if order_type.upper() in ("LIMIT", "STOP") else 0.0
+
+            if algo not in ("DMA", ""):
+                logger.debug("Moomoo: algo '%s' not supported, using default routing", algo)
+
+            ret, data = self._trade_ctx.place_order(
+                price=price,
+                qty=qty,
+                code=ticker,
+                trd_side=trd_side,
+                order_type=ft_order_type,
+                trd_env=self._env,
+            )
+            if ret != ft.RET_OK:
+                return {"success": False, "order_id": "", "message": str(data)}
+            order_id = str(data["order_id"].iloc[0]) if not data.empty else ""
+            return {"success": True, "order_id": order_id, "message": "Moomoo order placed"}
+        except Exception as e:
+            logger.warning("Moomoo place_order error: %s", e)
+            return {"success": False, "order_id": "", "message": str(e)}
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

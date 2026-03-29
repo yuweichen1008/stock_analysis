@@ -130,6 +130,54 @@ class IBKRClient(BrokerClient):
             return pd.DataFrame()
 
     # ------------------------------------------------------------------
+    # Order execution
+    # ------------------------------------------------------------------
+
+    def place_order(self, ticker: str, side: str, qty: float,
+                    order_type: str = "MARKET", limit_price: float = 0.0,
+                    algo: str = "DMA") -> dict:
+        if not self._ib:
+            return {"success": False, "order_id": "", "message": "IBKR not connected"}
+        try:
+            from ib_insync import Stock, MarketOrder, LimitOrder, Order, TagValue
+
+            contract = Stock(ticker, "SMART", "USD")
+            self._ib.qualifyContracts(contract)
+
+            if order_type == "LIMIT":
+                order = LimitOrder(side, qty, limit_price)
+            elif order_type == "STOP":
+                order = Order()
+                order.action        = side
+                order.orderType     = "STP"
+                order.auxPrice      = limit_price
+                order.totalQuantity = qty
+            else:
+                order = MarketOrder(side, qty)
+
+            # Execution algorithm overlay (IBKR Adaptive Algos)
+            if algo == "VWAP":
+                order.algoStrategy = "Vwap"
+                order.algoParams   = []
+            elif algo == "TWAP":
+                order.algoStrategy = "Twap"
+                order.algoParams   = []
+            elif algo == "ADAPTIVE":
+                order.algoStrategy = "Adaptive"
+                order.algoParams   = [TagValue("adaptivePriority", "Normal")]
+
+            trade = self._ib.placeOrder(contract, order)
+            self._ib.sleep(1)   # allow status to populate
+            return {
+                "success":  True,
+                "order_id": str(trade.order.orderId),
+                "message":  f"IBKR order placed — status: {trade.orderStatus.status}",
+            }
+        except Exception as e:
+            logger.warning("IBKR place_order error: %s", e)
+            return {"success": False, "order_id": "", "message": str(e)}
+
+    # ------------------------------------------------------------------
     # Class-level helpers
     # ------------------------------------------------------------------
 

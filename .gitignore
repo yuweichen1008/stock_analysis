@@ -3,4 +3,4 @@ data/
 *.csv
 daily_run.log
 __pycache__/
-*.log
+*.logdashboard/config.yaml
