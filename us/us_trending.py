@@ -40,7 +40,7 @@ def run_us_trending(base_dir: str):
         f = existing_files[0]
         try:
             df = pd.read_csv(f, index_col=0)
-            df.index = pd.to_datetime(df.index, errors="coerce")
+            df.index = pd.to_datetime(df.index, format="mixed", errors="coerce")
 
             for col in ["Open", "High", "Low", "Close", "Volume"]:
                 if col in df.columns:
