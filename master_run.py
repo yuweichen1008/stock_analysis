@@ -1,4 +1,5 @@
 import os
+import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -6,6 +7,7 @@ from dotenv import load_dotenv
 from tws.core import TaiwanStockEngine
 from tws.taiwan_trending import run_taiwan_trending
 from tws.telegram_notifier import send_stock_report, send_market_overview
+from tws.prediction_tracker import resolve_outcomes, save_predictions, prediction_summary
 from us.core import USStockEngine
 from us.us_trending import run_us_trending
 
@@ -17,13 +19,29 @@ def run_tws_pipeline():
 
     print(f"🚀 TWS 自動化流程啟動")
 
-    # Step 1: 數據同步 (取代原本被刪除的 init_history_crawler)
-    # 它會抓取今日 Top 20 並下載 K 線，存入 data/ohlcv
+    # Step 1: 數據同步 — downloads fresh OHLCV so outcome resolution has today's prices
     engine.sync_daily_data()
+
+    # Step 1b: Resolve previous predictions now that OHLCV files are up to date
+    print("[Step 1b] 驗證過去預測結果...")
+    resolve_outcomes(BASE_DIR)
 
     # Step 2: 執行趨勢篩選 (掃描 data/ohlcv 中的檔案)
     print("[Step 2] 執行台股趨勢分析...")
     run_taiwan_trending(BASE_DIR)
+
+    # Step 2b: Record today's signals as pending predictions
+    trending_file = os.path.join(BASE_DIR, "current_trending.csv")
+    if os.path.exists(trending_file):
+        signals_df = pd.read_csv(trending_file, dtype={"ticker": str})
+        save_predictions(BASE_DIR, signals_df, market="TW")
+        summary = prediction_summary(BASE_DIR)
+        if summary.get("total", 0) > 0:
+            print(
+                f"[Tracker] TW win rate — open: {summary['win_rate_open']}%  "
+                f"close: {summary['win_rate_close']}%  "
+                f"({summary['total']} resolved, {summary.get('pending', 0)} pending)"
+            )
 
     # Step 3: 更新深度金融數據 (ROE, PE, 目標價...)
     print("[Step 3] 同步 Yahoo Finance 深度數據 (含過期檢查)...")
@@ -45,9 +63,18 @@ def run_us_pipeline():
     print("[Step 1] Syncing US stock data...")
     tickers = us_engine.sync_daily_data()
 
+    # Step 1b: Resolve US predictions with fresh OHLCV
+    resolve_outcomes(BASE_DIR)
+
     # Step 2: Run trending analysis for US stocks
     print("[Step 2] Running US stock analysis...")
     run_us_trending(BASE_DIR)
+
+    # Step 2b: Record US predictions
+    us_trending_file = os.path.join(BASE_DIR, "data_us", "current_trending.csv")
+    if os.path.exists(us_trending_file):
+        us_signals_df = pd.read_csv(us_trending_file, dtype={"ticker": str})
+        save_predictions(BASE_DIR, us_signals_df, market="US")
 
     # Step 3: Update US company fundamentals (PE, ROE, sector…)
     print("[Step 3] Updating US company fundamentals...")
@@ -60,7 +87,7 @@ def run_us_pipeline():
 
 def main():
     start_time = datetime.now()
-    
+
     run_tws_pipeline()
     run_us_pipeline()
 
