@@ -40,14 +40,22 @@ def run_tws_pipeline():
 def run_us_pipeline():
     print(f"🚀 US 自動化流程啟動")
     us_engine = USStockEngine(BASE_DIR)
-    
+
     # Step 1: Sync S&P 500 tickers and download historical data
     print("[Step 1] Syncing US stock data...")
-    us_engine.sync_daily_data()
+    tickers = us_engine.sync_daily_data()
 
     # Step 2: Run trending analysis for US stocks
     print("[Step 2] Running US stock analysis...")
     run_us_trending(BASE_DIR)
+
+    # Step 3: Update US company fundamentals (PE, ROE, sector…)
+    print("[Step 3] Updating US company fundamentals...")
+    try:
+        from us.company_mapper import update_us_mapping
+        update_us_mapping(BASE_DIR, tickers or [])
+    except Exception as e:
+        print(f"[!] US company mapping failed (non-fatal): {e}")
 
 
 def main():

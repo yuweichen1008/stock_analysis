@@ -1,4 +1,0 @@
-- [x] Milestone 1: 核心數據引擎、自動補全機制、Telegram 基礎互動、歷史日誌系統。  
-- [x] Milestone 2: 整合 Plotly 視覺化 K 線圖傳送、加入乖離率 (Bias) 因子。  
-- [ ] Milestone 3: 實作回測系統 (Backtester)、對接美股分析模組。  
-- [ ] Milestone 4: 引入 LSTM 或 Transformer 深度學習模型優化預測。
