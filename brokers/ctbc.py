@@ -24,9 +24,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
+
+# Support both `python brokers/ctbc.py` (direct) and `from brokers.ctbc import ...` (package)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
