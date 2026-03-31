@@ -26,4 +26,6 @@ pytest
 lxml
 tzdata
 playwright>=1.40.0
+playwright-stealth
 ddddocr
+finvizfinance

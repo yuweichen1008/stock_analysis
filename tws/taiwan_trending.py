@@ -32,6 +32,83 @@ except ImportError:
         is_trading_day,
     )
 
+# ── 高價潛力股 threshold ──────────────────────────────────────────────────────
+HIGH_VALUE_MIN_PRICE = 500   # TWD; stocks ≥ this are candidates for moat analysis
+
+
+def score_high_value_stock(metrics: dict, roe: float = None) -> tuple[bool, float]:
+    """
+    Determine whether a stock qualifies as a 高價潛力股 (high-value moat stock)
+    and compute its moat score (0–10).
+
+    Criteria (ALL must pass):
+      price >= HIGH_VALUE_MIN_PRICE TWD
+      price > MA120                 (long-term uptrend)
+      RSI   > 45                    (momentum intact, not broken down)
+      vol_ratio < 3.0               (not in panic selling)
+      f60   > 0                     (net foreign accumulation over 60 days)
+
+    Score breakdown:
+      RSI in 50–75 → up to 3 pts   (peak momentum zone)
+      f_zscore > 1 → 2 pts          (statistically significant inflow)
+      price/MA120 > 1.05 → 2 pts    (comfortably above life-line)
+      ROE > 15% → 2 pts             (strong profitability moat)
+      price >= 1000 → 1 bonus pt    (true 千元 club)
+    """
+    price     = metrics.get('price', 0) or 0
+    ma120     = metrics.get('MA120', 0) or 0
+    rsi       = metrics.get('RSI', 0) or 0
+    vol_ratio = metrics.get('vol_ratio') or 0
+    f60       = metrics.get('f60') or 0
+    f_zscore  = metrics.get('f_zscore') or 0
+
+    # Hard gates
+    if price < HIGH_VALUE_MIN_PRICE:
+        return False, 0.0
+    if ma120 <= 0 or price <= ma120:
+        return False, 0.0
+    if rsi <= 45:
+        return False, 0.0
+    if vol_ratio > 3.0:
+        return False, 0.0
+    if f60 <= 0:
+        return False, 0.0
+
+    # Soft score
+    score = 0.0
+    # RSI 50-75 momentum zone (max 3 pts)
+    if 50 <= rsi <= 75:
+        score += min(3.0, (rsi - 50) / 25 * 3)
+    elif rsi > 75:
+        score += 1.0   # overbought — partial credit only
+    # Foreign inflow significance (max 2 pts)
+    if f_zscore > 1:
+        score += 2.0
+    elif f_zscore > 0:
+        score += 1.0
+    # Margin above MA120 (max 2 pts)
+    margin = (price - ma120) / ma120 * 100
+    if margin > 5.0:
+        score += 2.0
+    elif margin > 2.0:
+        score += 1.0
+    # ROE quality moat (max 2 pts)
+    if roe is not None:
+        try:
+            roe_val = float(roe)
+            if roe_val > 20:
+                score += 2.0
+            elif roe_val > 15:
+                score += 1.0
+        except (ValueError, TypeError):
+            pass
+    # 千元 club bonus (1 pt)
+    if price >= 1000:
+        score += 1.0
+
+    return True, round(min(score, 10.0), 2)
+
+
 def get_valid_tickers(tickers_dir):
     """
     載入高成長候選名單，排除 ETF (00開頭) 與標頭
@@ -187,7 +264,18 @@ def run_taiwan_trending(base_dir):
     valid_tickers = get_valid_tickers(tickers_dir)
     results = []          # signal stocks only → current_trending.csv
     universe_rows = []    # ALL scanned tickers   → universe_snapshot.csv
-    stats = {"Total": 0, "Signal": 0, "Below MA120": 0, "Not Oversold": 0}
+    stats = {"Total": 0, "Signal": 0, "High-Value": 0, "Below MA120": 0, "Not Oversold": 0}
+
+    # Load ROE from company mapping (needed for high-value moat scoring)
+    mapping_file = os.path.join(base_dir, "data", "company", "company_mapping.csv")
+    roe_map: dict = {}
+    if os.path.exists(mapping_file):
+        try:
+            _cm = pd.read_csv(mapping_file, dtype={'ticker': str})
+            if 'roe' in _cm.columns:
+                roe_map = dict(zip(_cm['ticker'], _cm['roe']))
+        except Exception:
+            pass
 
     # Resolve the trading date to use for TWSE API calls.
     # On weekends/holidays the exchange is closed: roll back to the last trading day
@@ -243,10 +331,26 @@ def run_taiwan_trending(base_dir):
             headlines = fetch_google_news_many(ticker, "", days=7, max_items=5)
             sentiment  = get_sentiment_score(headlines)
 
+            # ── 高價潛力股 moat check ─────────────────────────────────────────
+            hv_metrics = {**metrics, 'f60': f_metrics.get('f60'), 'f_zscore': f_metrics.get('zscore')}
+            is_high_value, hv_score = score_high_value_stock(hv_metrics, roe=roe_map.get(ticker))
+
+            # category: mean_reversion takes precedence when both fire
+            if is_signal:
+                category = "mean_reversion"
+                final_score = metrics.get('score', 0)
+            elif is_high_value:
+                category = "high_value_moat"
+                final_score = hv_score
+            else:
+                category = ""
+                final_score = metrics.get('score', 0)
+
             row = {
                 'ticker':         ticker,
-                'is_signal':      is_signal,
-                'score':          metrics.get('score', 0),
+                'is_signal':      is_signal or is_high_value,
+                'category':       category,
+                'score':          final_score,
                 'price':          metrics.get('price'),
                 'MA120':          metrics.get('MA120'),
                 'MA20':           metrics.get('MA20'),
@@ -267,6 +371,9 @@ def run_taiwan_trending(base_dir):
             if is_signal:
                 stats["Signal"] += 1
                 results.append(row)
+            elif is_high_value:
+                stats["High-Value"] += 1
+                results.append(row)
             else:
                 for r in reasons:
                     if r in stats:
@@ -276,7 +383,7 @@ def run_taiwan_trending(base_dir):
             print(f"   ! 處理 {ticker} 時出錯: {e}")
 
     # ── Summary ────────────────────────────────────────────────────────────
-    print(f"   掃描: {stats['Total']} | 🚀 訊號: {stats['Signal']} | 📉 生命線下: {stats['Below MA120']} | 📈 未超賣: {stats['Not Oversold']}")
+    print(f"   掃描: {stats['Total']} | 🚀 均值回歸: {stats['Signal']} | 💎 高價潛力: {stats['High-Value']} | 📉 生命線下: {stats['Below MA120']}")
 
     # ── Write signal file ───────────────────────────────────────────────────
     if results:

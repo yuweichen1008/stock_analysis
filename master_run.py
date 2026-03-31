@@ -142,8 +142,8 @@ def main():
             # 08:00–14:00 TST: TW trading window — TW pipeline only
             run_tw, run_us = True, False
         else:
-            # Outside TW window: run TW (settled EOD) + US
-            run_tw, run_us = True, True
+            # Outside TW window (evenings / early morning): US pipeline only
+            run_tw, run_us = False, True
     else:
         run_tw = args.market in ("TW", "all")
         run_us = args.market in ("US", "all")

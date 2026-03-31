@@ -399,16 +399,14 @@ def send_stock_report(base_dir):
     if df_trend.empty:
         return
 
-    # ── Build one concise actionable message ─────────────────────────────────
-    lines = [
-        f"🚀 *TWS 今日均值回歸訊號* — {date_label}",
-        f"共 *{len(df_trend)} 檔*觸發買進條件",
-        "",
-        "🛒 *建議清單 (今收買入 → 明開賣出)*",
-        "━━━━━━━━━━━━━━━━━━━━",
-    ]
+    # Split by category (handle files without category column gracefully)
+    if 'category' not in df_trend.columns:
+        df_trend['category'] = 'mean_reversion'
+    df_mr  = df_trend[df_trend['category'] == 'mean_reversion']
+    df_hv  = df_trend[df_trend['category'] == 'high_value_moat']
 
-    for rank, (_, row) in enumerate(df_trend.iterrows(), start=1):
+    # ── Helper to format a single signal row ─────────────────────────────────
+    def _row_line(rank, row, show_moat=False):
         t    = str(row['ticker'])
         info = mapping.get(t, {})
         name = info.get('name', t)
@@ -426,10 +424,7 @@ def send_stock_report(base_dir):
         score = _fmt('score')
         price = _fmt('price', '.1f')
         rsi   = _fmt('RSI',   '.1f')
-        bias  = _fmt('bias',  '.1f')
-        vol   = _fmt('vol_ratio', '.1f')
 
-        # Sentiment emoji
         sent_raw = row.get('news_sentiment', 0)
         try:
             s = float(sent_raw)
@@ -437,32 +432,96 @@ def send_stock_report(base_dir):
         except (ValueError, TypeError):
             sent_e = '😐'
 
-        # Foreign flow
-        fnet = row.get('foreign_net')
+        f60 = row.get('f60')
         try:
-            fv = float(fnet)
-            f_str = f'外資{"買" if fv > 0 else "賣"}超{abs(fv)/1000:.0f}K'
+            f60v = float(f60)
+            f_str = f'外資60日{"買" if f60v > 0 else "賣"}超' if show_moat else ''
         except (ValueError, TypeError):
             f_str = ''
 
-        vol_str = f'量比{vol}x' if vol != 'N/A' else ''
-        details = '  '.join(filter(None, [vol_str, f_str, sent_e]))
+        if show_moat:
+            details = '  '.join(filter(None, [f_str, sent_e]))
+            return (
+                f"*{rank}\\. {t} {name}* {ind}\n"
+                f"   ${price}  RSI {rsi}  ⭐{score}\n"
+                f"   {details}"
+            )
+        else:
+            bias  = _fmt('bias', '.1f')
+            vol   = _fmt('vol_ratio', '.1f')
+            fnet  = row.get('foreign_net')
+            try:
+                fv = float(fnet)
+                fnet_str = f'外資{"買" if fv > 0 else "賣"}超{abs(fv)/1000:.0f}K'
+            except (ValueError, TypeError):
+                fnet_str = ''
+            vol_str = f'量比{vol}x' if vol != 'N/A' else ''
+            details = '  '.join(filter(None, [vol_str, fnet_str, sent_e]))
+            return (
+                f"*{rank}\\. {t} {name}* {ind}\n"
+                f"   ${price}  RSI {rsi}  Bias {bias}%  ⭐{score}\n"
+                f"   {details}"
+            )
 
-        lines.append(
-            f"*{rank}\\. {t} {name}* {ind}\n"
-            f"   ${price}  RSI {rsi}  Bias {bias}%  ⭐{score}\n"
-            f"   {details}"
-        )
-
-    lines += [
+    # ── Build message ─────────────────────────────────────────────────────────
+    lines = [
+        f"🚀 *TWS 今日訊號* — {date_label}",
         "",
-        "📋 *操作策略*",
-        " ├ 買入: 今日收盤前市價單",
-        " ├ 賣出: 明日開盤出場",
-        " └ 停損: 跌破 MA120 立即出場",
-        "",
-        "_均值回歸: 強勢股短線超賣 → 預期明日反彈_",
     ]
+
+    # Mean-reversion section
+    if not df_mr.empty:
+        lines += [
+            f"📈 *均值回歸訊號* ({len(df_mr)} 檔)  _今收買入 → 明開賣出_",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+        for rank, (_, row) in enumerate(df_mr.iterrows(), start=1):
+            lines.append(_row_line(rank, row, show_moat=False))
+        lines += [
+            "",
+            " ├ 買入: 今日收盤前  ├ 賣出: 明日開盤",
+            " └ 停損: 跌破 MA120 立即出場",
+            "",
+        ]
+
+    # High-value moat section
+    if not df_hv.empty:
+        lines += [
+            f"💎 *高價潛力股 — 技術護城河* ({len(df_hv)} 檔)",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+        for rank, (_, row) in enumerate(df_hv.iterrows(), start=1):
+            lines.append(_row_line(rank, row, show_moat=True))
+
+            # Add data-driven moat summary line (no external API needed)
+            try:
+                pe    = row.get("pe_ratio")
+                roe   = row.get("roe")
+                div   = row.get("dividend_yield")
+                f60v  = float(row.get("f60") or 0)
+                fz    = float(row.get("f_zscore") or 0)
+                parts = []
+                if roe not in (None, "") and not (isinstance(roe, float) and pd.isna(roe)):
+                    parts.append(f"ROE {float(roe):.1f}%")
+                if pe not in (None, "") and not (isinstance(pe, float) and pd.isna(pe)):
+                    parts.append(f"PE {float(pe):.1f}")
+                if div not in (None, "") and not (isinstance(div, float) and pd.isna(div)):
+                    parts.append(f"殖利率 {float(div):.2f}%")
+                flow_tag = "外資持續買超" if fz > 1 else ("外資淨流入" if f60v > 0 else "")
+                if flow_tag:
+                    parts.append(flow_tag)
+                if parts:
+                    lines.append(f"   _{' | '.join(parts)}_")
+            except Exception:
+                pass
+
+        lines += [
+            "",
+            "_持股策略: 長線持有，逢回加碼，跌破 MA120 減碼_",
+        ]
+
+    if df_mr.empty and df_hv.empty:
+        lines.append("今日無訊號。")
 
     tool.send_markdown('\n'.join(lines))
 

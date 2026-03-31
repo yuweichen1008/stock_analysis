@@ -72,6 +72,7 @@ def run_us_trending(base_dir: str):
             row = {
                 "ticker":         ticker,
                 "is_signal":      is_signal,
+                "category":       "mean_reversion" if is_signal else "",
                 "score":          metrics.get("score", 0),
                 "price":          metrics.get("price"),
                 "MA120":          metrics.get("MA120"),
@@ -79,6 +80,13 @@ def run_us_trending(base_dir: str):
                 "RSI":            metrics.get("RSI"),
                 "bias":           metrics.get("bias"),
                 "vol_ratio":      round(last_vol_ratio, 2) if last_vol_ratio is not None else None,
+                # US stocks have no TWSE institutional flow; keep columns for schema parity
+                "foreign_net":    None,
+                "f5":             None,
+                "f20":            None,
+                "f60":            None,
+                "f_zscore":       None,
+                "short_interest": None,
                 "news_sentiment": round(news_sentiment, 3),
                 "last_date":      df.index[-1].strftime("%Y-%m-%d"),
             }

@@ -6,12 +6,61 @@ with st.cache_resource (singleton) or st.cache_data (data TTL) so pages
 don't re-fetch on every rerender.
 """
 
+import json
+import logging
 import os
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).resolve().parent.parent   # repo root
+
+# ---------------------------------------------------------------------------
+# One-time data directory bootstrap
+# ---------------------------------------------------------------------------
+
+def _bootstrap_data_dirs():
+    """
+    Ensure all required data directories exist on first run.
+    Creates empty stub files where needed so pages never crash on missing paths.
+    """
+    dirs = [
+        BASE_DIR / "data" / "company",
+        BASE_DIR / "data" / "tickers",
+        BASE_DIR / "data" / "ohlcv",
+        BASE_DIR / "data" / "predictions",
+        BASE_DIR / "data_us" / "ohlcv",
+    ]
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Stub files that dashboard pages read on first boot
+    stubs = {
+        BASE_DIR / "data" / "company" / "company_mapping.csv":
+            "ticker,name,industry,pe_ratio,roe,debt_to_equity,target_price,"
+            "recommendation,dividend_yield,last_update_date\n",
+        BASE_DIR / "data" / "company" / "universe_snapshot.csv":
+            "ticker,is_signal,category,score,price,MA120,MA20,RSI,bias,"
+            "vol_ratio,foreign_net,f5,f20,f60,f_zscore,short_interest,"
+            "news_sentiment,last_date\n",
+        BASE_DIR / "data" / "predictions" / "prediction_history.csv":
+            "signal_date,market,ticker,entry_price,score,RSI,bias,vol_ratio,"
+            "news_sentiment,target_date,target_open,target_close,"
+            "open_return_pct,close_return_pct,win_open,win_close,status\n",
+    }
+    for path, header in stubs.items():
+        if not path.exists():
+            try:
+                path.write_text(header, encoding="utf-8-sig")
+                logger.info("Created stub: %s", path)
+            except Exception as e:
+                logger.warning("Could not create stub %s: %s", path, e)
+
+
+_bootstrap_data_dirs()
 
 
 # ---------------------------------------------------------------------------

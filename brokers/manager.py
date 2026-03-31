@@ -5,6 +5,7 @@ Only brokers with credentials present in the environment are loaded.
 Each broker is connected lazily when a report method is first called.
 """
 
+import atexit
 import logging
 import pandas as pd
 from typing import List
@@ -76,12 +77,17 @@ class BrokerManager:
         self._clients = self._load_clients()
         active = []
         for c in self._clients:
-            if c.connect():
-                active.append(c)
-            else:
-                logger.warning("%s: connection failed — skipping", c.name)
-        self._clients  = active
+            try:
+                if c.connect():
+                    active.append(c)
+                else:
+                    logger.warning("%s: connection failed — skipping", c.name)
+            except Exception as e:
+                logger.warning("%s: connect() raised — skipping: %s", c.name, e)
+        self._clients   = active
         self._connected = True
+        # Ensure brokers are cleanly disconnected when the process exits
+        atexit.register(self.disconnect_all)
 
     def disconnect_all(self):
         for c in self._clients:
@@ -89,7 +95,7 @@ class BrokerManager:
                 c.disconnect()
             except Exception:
                 pass
-        self._clients  = []
+        self._clients   = []
         self._connected = False
 
     # ------------------------------------------------------------------
@@ -121,11 +127,14 @@ class BrokerManager:
         self._ensure_connected()
         frames = []
         for c in self._clients:
-            df = c.get_positions()
-            if not df.empty:
-                df = df.copy()
-                df.insert(0, "broker", c.name)
-                frames.append(df)
+            try:
+                df = c.get_positions()
+                if not df.empty:
+                    df = df.copy()
+                    df.insert(0, "broker", c.name)
+                    frames.append(df)
+            except Exception as e:
+                logger.warning("%s: get_positions() failed: %s", c.name, e)
         if not frames:
             return pd.DataFrame(columns=["broker", "ticker", "qty", "avg_cost", "mkt_value", "pnl"])
         return pd.concat(frames, ignore_index=True)
@@ -135,9 +144,12 @@ class BrokerManager:
         self._ensure_connected()
         results = []
         for c in self._clients:
-            b = c.get_balance()
-            if b:
-                results.append({"broker": c.name, **b})
+            try:
+                b = c.get_balance()
+                if b:
+                    results.append({"broker": c.name, **b})
+            except Exception as e:
+                logger.warning("%s: get_balance() failed: %s", c.name, e)
         return results
 
     def connected_broker_names(self) -> list:

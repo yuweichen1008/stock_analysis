@@ -5,17 +5,58 @@ Overview page — combined portfolio summary across all connected brokers.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+import json
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from dashboard.data_helpers import get_broker_manager, merge_positions_with_fundamentals, fmt_currency
+from datetime import datetime
+from pathlib import Path
+from dashboard.data_helpers import (
+    BASE_DIR, get_broker_manager, merge_positions_with_fundamentals, fmt_currency
+)
 
 st.set_page_config(page_title="Overview", page_icon="💰", layout="wide")
 st.title("💰 Portfolio Overview")
 
 mgr = get_broker_manager()
 connected = mgr.connected_broker_names()
+
+# ── YTD baseline helpers ───────────────────────────────────────────────────────
+_BASELINE_FILE    = BASE_DIR / "data" / "portfolio_baseline.json"
+_STRATEGIES_FILE  = BASE_DIR / "data" / "account_strategies.json"
+_STRATEGY_OPTIONS = ["Mean-Reversion", "High-Value Moat", "US Momentum", "Hold Only"]
+
+
+def _load_baseline() -> dict | None:
+    if _BASELINE_FILE.exists():
+        try:
+            return json.loads(_BASELINE_FILE.read_text())
+        except Exception:
+            pass
+    return None
+
+
+def _save_baseline(total_value: float):
+    _BASELINE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _BASELINE_FILE.write_text(json.dumps({
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "total_value": round(total_value, 2),
+    }))
+
+
+def _load_strategies() -> dict:
+    if _STRATEGIES_FILE.exists():
+        try:
+            return json.loads(_STRATEGIES_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_strategies(strategies: dict):
+    _STRATEGIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _STRATEGIES_FILE.write_text(json.dumps(strategies))
 
 # ── Broker connection status ──────────────────────────────────────────────────
 st.subheader("Broker Connections")
@@ -38,12 +79,16 @@ balances = mgr.get_all_balances()
 if balances:
     b_cols = st.columns(len(balances))
     total_value_usd = 0.0
+    total_cash      = 0.0
+    total_upnl      = 0.0
     for col, b in zip(b_cols, balances):
         cur   = b.get("currency", "USD")
         total = b.get("total_value", 0)
         cash  = b.get("cash",        0)
         upnl  = b.get("unrealized_pnl", 0)
         total_value_usd += total
+        total_cash      += cash
+        total_upnl      += upnl
         with col:
             st.markdown(f"### {b['broker']}")
             st.metric("Net Value",       fmt_currency(total, cur))
@@ -53,7 +98,52 @@ if balances:
                       delta_color="normal")
 
     st.divider()
-    st.metric("💼 Total Portfolio Value (all brokers)", f"≈ {total_value_usd:,.2f}")
+
+    # ── YTD KPI row ───────────────────────────────────────────────────────────
+    baseline = _load_baseline()
+    ytd_pct  = None
+    ytd_delta = None
+    if baseline and baseline.get("total_value", 0) > 0:
+        ytd_pct   = (total_value_usd - baseline["total_value"]) / baseline["total_value"] * 100
+        ytd_delta = total_value_usd - baseline["total_value"]
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("💼 Total Assets",       f"{total_value_usd:,.2f}",
+              help="Sum of all broker net values")
+    k2.metric("📈 Unrealized PnL",     f"{total_upnl:+,.2f}",
+              delta=f"{total_upnl:+,.2f}", delta_color="normal")
+    k3.metric("💵 Total Cash",         f"{total_cash:,.2f}")
+    if ytd_pct is not None:
+        k4.metric(
+            f"📊 YTD Return (since {baseline['date']})",
+            f"{ytd_pct:+.2f}%",
+            delta=f"{ytd_delta:+,.2f}",
+            delta_color="normal",
+        )
+    else:
+        with k4:
+            st.metric("📊 YTD Return", "—", help="No baseline set")
+            if st.button("📌 Set Baseline Now"):
+                _save_baseline(total_value_usd)
+                st.success(f"Baseline set: {total_value_usd:,.2f} on {datetime.now().strftime('%Y-%m-%d')}")
+                st.rerun()
+
+    st.divider()
+
+    # ── Account strategy selector ─────────────────────────────────────────────
+    with st.expander("🎯 Account Strategies", expanded=False):
+        st.caption("Select a trading strategy per broker. Saved automatically.")
+        saved_strats = _load_strategies()
+        new_strats   = {}
+        strat_cols   = st.columns(max(len(balances), 1))
+        for col, b in zip(strat_cols, balances):
+            broker = b["broker"]
+            default_idx = _STRATEGY_OPTIONS.index(saved_strats.get(broker, "Mean-Reversion"))
+            chosen = col.selectbox(broker, _STRATEGY_OPTIONS, index=default_idx, key=f"strat_{broker}")
+            new_strats[broker] = chosen
+        if new_strats != saved_strats:
+            _save_strategies(new_strats)
+            st.caption("✅ Strategies saved.")
 
 st.divider()
 
