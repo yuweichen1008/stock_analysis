@@ -87,10 +87,14 @@ def run_us_pipeline():
         print(f"[!] US company mapping failed (non-fatal): {e}")
 
 
-def _tw_eod_ready() -> bool:
-    """True after Taiwan market close (13:30 TST, Mon–Fri)."""
+def _tw_session() -> bool:
+    """True during Taiwan trading window (08:00–14:00 TST, Mon–Fri).
+
+    08:00 covers pre-market data prep; 14:00 gives 30 min after close (13:30)
+    for EOD data to settle.
+    """
     now = datetime.now(ZoneInfo("Asia/Taipei"))
-    return now.weekday() < 5 and (now.hour, now.minute) >= (13, 30)
+    return now.weekday() < 5 and 8 <= now.hour < 14
 
 
 def _us_eod_ready() -> bool:
@@ -100,12 +104,20 @@ def _us_eod_ready() -> bool:
 
 
 def main():
+    """
+    Auto scheduling rules (UTC+8 = TST):
+      08:00–14:00 TST Mon–Fri  →  TW only   (market active / just closed)
+      all other weekday times  →  TW + US   (TW EOD settled, US post-close)
+      weekends                 →  nothing   (use --market to override)
+
+    Override: --market TW | US | all
+    """
     parser = argparse.ArgumentParser(
         description="Stock analysis pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python master_run.py              # auto: run whichever market(s) are EOD-ready\n"
+            "  python master_run.py              # auto schedule (see rules above)\n"
             "  python master_run.py --market TW  # force TW pipeline only\n"
             "  python master_run.py --market US  # force US pipeline only\n"
             "  python master_run.py --market all # force both pipelines\n"
@@ -113,22 +125,31 @@ def main():
     )
     parser.add_argument(
         "--market", choices=["TW", "US", "all"], default="auto",
-        help="Which pipeline to run (default: auto-detect from current EOD time)",
+        help="Which pipeline to run (default: auto-detect from current time)",
     )
     args = parser.parse_args()
 
-    run_tw = args.market in ("TW", "all") or (args.market == "auto" and _tw_eod_ready())
-    run_us = args.market in ("US", "all") or (args.market == "auto" and _us_eod_ready())
+    now_tst = datetime.now(ZoneInfo("Asia/Taipei"))
+    now_et  = datetime.now(ZoneInfo("America/New_York"))
+    is_weekday = now_tst.weekday() < 5
 
-    if not run_tw and not run_us:
-        tw_t = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%H:%M TST")
-        us_t = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M ET")
-        print(f"⏳ Neither market is EOD-ready yet  (TW: {tw_t}, US: {us_t})")
-        print("   TW pipeline runs after 13:30 TST | US pipeline runs after 16:00 ET")
-        print("   Use --market TW|US|all to force.")
-        return
+    if args.market == "auto":
+        if not is_weekday:
+            print(f"⏳ Weekend ({now_tst.strftime('%A %H:%M TST')}) — no auto run.")
+            print("   Use --market TW|US|all to force.")
+            return
+        if _tw_session():
+            # 08:00–14:00 TST: TW trading window — TW pipeline only
+            run_tw, run_us = True, False
+        else:
+            # Outside TW window: run TW (settled EOD) + US
+            run_tw, run_us = True, True
+    else:
+        run_tw = args.market in ("TW", "all")
+        run_us = args.market in ("US", "all")
 
     start_time = datetime.now()
+    print(f"[Time] TST {now_tst.strftime('%H:%M')} | ET {now_et.strftime('%H:%M')}")
     if run_tw:
         print("🇹🇼 Running TW pipeline")
         run_tws_pipeline()
