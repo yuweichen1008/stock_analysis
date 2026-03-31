@@ -59,6 +59,14 @@ class BrokerManager:
         except ImportError:
             logger.debug("robin_stocks not installed — Robinhood skipped")
 
+        try:
+            from brokers.ctbc import CTBCClient
+            if CTBCClient.is_configured():
+                clients.append(CTBCClient())
+                logger.info("BrokerManager: CTBC enabled")
+        except ImportError:
+            logger.debug("playwright not installed — CTBC skipped")
+
         return clients
 
     def connect_all(self):

@@ -25,3 +25,5 @@ google-cloud-bigquery
 pytest
 lxml
 tzdata
+playwright>=1.40.0
+ddddocr
