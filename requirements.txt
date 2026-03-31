@@ -23,3 +23,5 @@ kaleido
 vaderSentiment
 google-cloud-bigquery
 pytest
+lxml
+tzdata

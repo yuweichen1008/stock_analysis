@@ -1,6 +1,8 @@
+import argparse
 import os
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 # 統一模組化導入
@@ -85,12 +87,54 @@ def run_us_pipeline():
         print(f"[!] US company mapping failed (non-fatal): {e}")
 
 
+def _tw_eod_ready() -> bool:
+    """True after Taiwan market close (13:30 TST, Mon–Fri)."""
+    now = datetime.now(ZoneInfo("Asia/Taipei"))
+    return now.weekday() < 5 and (now.hour, now.minute) >= (13, 30)
+
+
+def _us_eod_ready() -> bool:
+    """True after US market close (16:00 ET, Mon–Fri)."""
+    now = datetime.now(ZoneInfo("America/New_York"))
+    return now.weekday() < 5 and now.hour >= 16
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Stock analysis pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python master_run.py              # auto: run whichever market(s) are EOD-ready\n"
+            "  python master_run.py --market TW  # force TW pipeline only\n"
+            "  python master_run.py --market US  # force US pipeline only\n"
+            "  python master_run.py --market all # force both pipelines\n"
+        ),
+    )
+    parser.add_argument(
+        "--market", choices=["TW", "US", "all"], default="auto",
+        help="Which pipeline to run (default: auto-detect from current EOD time)",
+    )
+    args = parser.parse_args()
+
+    run_tw = args.market in ("TW", "all") or (args.market == "auto" and _tw_eod_ready())
+    run_us = args.market in ("US", "all") or (args.market == "auto" and _us_eod_ready())
+
+    if not run_tw and not run_us:
+        tw_t = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%H:%M TST")
+        us_t = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M ET")
+        print(f"⏳ Neither market is EOD-ready yet  (TW: {tw_t}, US: {us_t})")
+        print("   TW pipeline runs after 13:30 TST | US pipeline runs after 16:00 ET")
+        print("   Use --market TW|US|all to force.")
+        return
+
     start_time = datetime.now()
-
-    run_tws_pipeline()
-    run_us_pipeline()
-
+    if run_tw:
+        print("🇹🇼 Running TW pipeline")
+        run_tws_pipeline()
+    if run_us:
+        print("🇺🇸 Running US pipeline")
+        run_us_pipeline()
     print(f"✅ 流程完成。耗時: {datetime.now() - start_time}")
 
 if __name__ == "__main__":

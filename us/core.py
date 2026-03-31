@@ -1,10 +1,12 @@
+import glob
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
+
 import pandas as pd
 import requests
 import yfinance as yf
-import os
-import glob
-from concurrent.futures import ThreadPoolExecutor
-from io import StringIO
 
 class USStockEngine:
     def __init__(self, base_dir):
@@ -44,15 +46,25 @@ class USStockEngine:
             executor.map(self._download_ohlcv, tickers)
 
     def _download_ohlcv(self, ticker):
-        """Downloads 250 days of OHLCV data for a given ticker."""
+        """Downloads 250 days of OHLCV data for a given ticker.
+
+        Uses yf.Ticker().history() with a small sleep to avoid the yfinance
+        thread-safety issue where concurrent yf.download() calls return the
+        same cached DataFrame for different tickers (mirrors tws/core.py).
+        """
         try:
-            # yfinance uses '-' for sub-classes, e.g. BRK-B, BF-B
-            df = yf.download(ticker, period="250d", progress=False)
-            if not df.empty:
-                start, end = df.index[0].strftime("%Y%m%d"), df.index[-1].strftime("%Y%m%d")
-                for old_f in glob.glob(os.path.join(self.ohlcv_dir, f"{ticker}_*.csv")):
-                    os.remove(old_f)
-                df.to_csv(os.path.join(self.ohlcv_dir, f"{ticker}_{start}_{end}.csv"))
+            time.sleep(0.3)
+            df = yf.Ticker(ticker).history(period="250d", auto_adjust=True)
+            if df.empty:
+                return
+            df.index = df.index.tz_localize(None)
+            start = df.index[0].strftime("%Y%m%d")
+            end   = df.index[-1].strftime("%Y%m%d")
+            for old_f in glob.glob(os.path.join(self.ohlcv_dir, f"{ticker}_*.csv")):
+                os.remove(old_f)
+            df[["Open", "High", "Low", "Close", "Volume"]].to_csv(
+                os.path.join(self.ohlcv_dir, f"{ticker}_{start}_{end}.csv")
+            )
         except Exception as e:
             print(f"Error downloading {ticker}: {e}")
 
