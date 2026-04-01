@@ -4,217 +4,233 @@ import numpy as np
 import glob
 from datetime import timedelta
 
-# It's better to move the filter logic to a shared module,
-# but for now, we'll import it from the existing script.
 from tws.taiwan_trending import apply_filters
 
+
 class Backtester:
+    """
+    Mean-reversion day-trade backtester.
+
+    Entry : next-day open after signal fires
+    Exit  : stop-loss | take-profit | time-stop (close of last holding day)
+    """
+
     def __init__(self, start_date, end_date):
         self.start_date = pd.to_datetime(start_date)
-        self.end_date = pd.to_datetime(end_date)
-        self.ohlcv_dir = os.path.join(os.path.dirname(__file__), "data", "ohlcv")
+        self.end_date   = pd.to_datetime(end_date)
+        self.ohlcv_dir  = os.path.join(os.path.dirname(__file__), "data", "ohlcv")
 
-    def _load_data(self, ticker):
-        """Loads historical data for a given ticker."""
-        pattern = os.path.join(self.ohlcv_dir, f"{ticker}_*.csv")
-        files = glob.glob(pattern)
-        if not files:
-            return None
-        
-        df = pd.read_csv(files[0], index_col=0, parse_dates=True)
-        
-        # Data cleaning
-        cols_to_fix = ['Open', 'High', 'Low', 'Close', 'Volume']
-        for col in cols_to_fix:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=cols_to_fix)
-        
-        return df
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def run(self, tickers, holding_days=5, stop_loss_pct=0.05, take_profit_pct=0.1, commission_pct=0.001425):
-        """Runs the backtest for a list of tickers."""
+    def run(
+        self,
+        tickers,
+        holding_days    = 5,
+        stop_loss_pct   = 0.05,
+        take_profit_pct = 0.10,
+        commission_pct  = 0.001425,
+    ):
+        """
+        Run backtest across all tickers.
+
+        Returns
+        -------
+        trades_df : pd.DataFrame  — one row per trade
+        summary   : dict          — aggregate performance metrics
+        """
         all_trades = []
         for ticker in tickers:
-            print(f"--- Backtesting {ticker} ---")
             df = self._load_data(ticker)
             if df is None:
-                print(f"No data for {ticker}")
+                print(f"  No data for {ticker}")
                 continue
-
-            trades = self._run_ticker_backtest(df, ticker, holding_days, stop_loss_pct, take_profit_pct)
+            trades = self._run_ticker_backtest(
+                df, ticker, holding_days, stop_loss_pct, take_profit_pct
+            )
             all_trades.extend(trades)
 
-        if all_trades:
-            self._calculate_performance(all_trades, commission_pct)
-            return all_trades
-        else:
-            print("No trades were made during the backtest period.")
-            return []
+        if not all_trades:
+            print("No trades were generated during the backtest period.")
+            return pd.DataFrame(), {}
 
-    def _run_ticker_backtest(self, df, ticker, holding_days=5, stop_loss_pct=0.05, take_profit_pct=0.1):
+        trades_df = pd.DataFrame(all_trades)
+
+        # Apply commission (round-trip: buy + sell)
+        round_trip = commission_pct * 2
+        trades_df["commission"] = (
+            trades_df["entry_price"] + trades_df["exit_price"]
+        ) * round_trip
+        trades_df["net_profit"]        = trades_df["profit"]        - trades_df["commission"]
+        trades_df["net_profit_pct"]    = (
+            trades_df["net_profit"] / trades_df["entry_price"] * 100
+        )
+
+        summary = self._build_summary(trades_df)
+        self._print_summary(summary)
+        return trades_df, summary
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internal helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_data(self, ticker):
+        pattern = os.path.join(self.ohlcv_dir, f"{ticker}_*.csv")
+        files   = glob.glob(pattern)
+        if not files:
+            return None
+        df = pd.read_csv(files[0], index_col=0, parse_dates=True)
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["Open", "High", "Low", "Close"])
+        return df
+
+    def _run_ticker_backtest(self, df, ticker, holding_days, stop_loss_pct, take_profit_pct):
         trades = []
-        
         try:
-            start_idx = df.index.searchsorted(self.start_date, side='left')
-            end_idx = df.index.searchsorted(self.end_date, side='right')
+            start_idx = df.index.searchsorted(self.start_date, side="left")
+            end_idx   = df.index.searchsorted(self.end_date,   side="right")
         except Exception:
-            print(f"Backtest date range not found in data for {ticker}")
             return []
 
         last_exit_i = -1
-        
+
         for i in range(start_idx, end_idx + 1):
-            if i <= last_exit_i:
+            if i <= last_exit_i or i < 120:
                 continue
 
-            # Need at least 120 days of history before this point
-            if i < 120:
+            is_signal, _, metrics = apply_filters(df.iloc[:i].copy())
+            if not is_signal:
                 continue
 
-            historical_df = df.iloc[:i]
-            is_signal, _, metrics = apply_filters(historical_df.copy())
+            entry_loc = i + 1
+            if entry_loc >= len(df):
+                continue
 
-            if is_signal:
-                entry_loc = i + 1
-                if entry_loc >= len(df):
-                    continue
+            entry_date  = df.index[entry_loc]
+            entry_price = float(df["Open"].iloc[entry_loc])
 
-                entry_date = df.index[entry_loc]
-                entry_price = df['Open'].iloc[entry_loc]
-                
-                stop_loss_price = entry_price * (1 - stop_loss_pct)
-                take_profit_price = entry_price * (1 + take_profit_pct)
+            sl_price = entry_price * (1 - stop_loss_pct)
+            tp_price = entry_price * (1 + take_profit_pct)
 
-                exit_date = None
-                exit_price = None
-                exit_loc = -1
+            exit_date  = None
+            exit_price = None
+            exit_loc   = -1
+            exit_reason = "time"
 
-                for j in range(1, holding_days + 1):
-                    current_loc = entry_loc + j
-                    if current_loc >= len(df):
-                        break
-                    
-                    current_date = df.index[current_loc]
-                    day_low = df['Low'].iloc[current_loc]
-                    day_high = df['High'].iloc[current_loc]
+            for j in range(1, holding_days + 1):
+                cur = entry_loc + j
+                if cur >= len(df):
+                    break
+                lo = float(df["Low"].iloc[cur])
+                hi = float(df["High"].iloc[cur])
+                if lo <= sl_price:
+                    exit_date   = df.index[cur]
+                    exit_price  = sl_price
+                    exit_loc    = cur
+                    exit_reason = "stop_loss"
+                    break
+                if hi >= tp_price:
+                    exit_date   = df.index[cur]
+                    exit_price  = tp_price
+                    exit_loc    = cur
+                    exit_reason = "take_profit"
+                    break
 
-                    if day_low <= stop_loss_price:
-                        exit_date = current_date
-                        exit_price = stop_loss_price
-                        exit_loc = current_loc
-                        break
-                    
-                    if day_high >= take_profit_price:
-                        exit_date = current_date
-                        exit_price = take_profit_price
-                        exit_loc = current_loc
-                        break
+            if exit_date is None:
+                exit_loc    = min(entry_loc + holding_days, len(df) - 1)
+                exit_date   = df.index[exit_loc]
+                exit_price  = float(df["Close"].iloc[exit_loc])
+                exit_reason = "time"
 
-                if exit_date is None:
-                    exit_loc = entry_loc + holding_days
-                    if exit_loc >= len(df):
-                        exit_loc = len(df) - 1
-                    
-                    exit_date = df.index[exit_loc]
-                    exit_price = df['Close'].iloc[exit_loc]
+            profit     = exit_price - entry_price
+            profit_pct = profit / entry_price * 100
 
-                profit = exit_price - entry_price
-                profit_percent = (profit / entry_price) * 100
-                
-                trades.append({
-                    "ticker": ticker,
-                    "entry_date": entry_date.strftime('%Y-%m-%d'),
-                    "entry_price": entry_price,
-                    "exit_date": exit_date.strftime('%Y-%m-%d'),
-                    "exit_price": exit_price,
-                    "profit": profit,
-                    "profit_percent": profit_percent,
-                })
-                last_exit_i = exit_loc
-        
+            trades.append({
+                "ticker":       ticker,
+                "entry_date":   entry_date.strftime("%Y-%m-%d"),
+                "exit_date":    exit_date.strftime("%Y-%m-%d"),
+                "entry_price":  round(entry_price, 2),
+                "exit_price":   round(exit_price,  2),
+                "profit":       round(profit,     2),
+                "profit_pct":   round(profit_pct, 2),
+                "exit_reason":  exit_reason,
+                "signal_rsi":   round(metrics.get("RSI",  0), 1),
+                "signal_bias":  round(metrics.get("bias", 0), 1),
+                "signal_score": round(metrics.get("score",0), 1),
+            })
+            last_exit_i = exit_loc
+
         return trades
 
-    def _calculate_performance(self, trades, commission_pct=0.001425):
-        """Calculates and prints the performance of the backtest."""
-        if not trades:
-            print("No trades to analyze.")
-            return
+    def _build_summary(self, df: pd.DataFrame) -> dict:
+        n     = len(df)
+        wins  = int((df["net_profit"] > 0).sum())
+        total = float(df["net_profit"].sum())
+        avg   = float(df["net_profit_pct"].mean())
 
-        df_trades = pd.DataFrame(trades)
-        
-        # Add commission
-        df_trades['profit'] -= (df_trades['entry_price'] + df_trades['exit_price']) * commission_pct
-        df_trades['profit_percent'] = (df_trades['profit'] / df_trades['entry_price']) * 100
+        # Annualised Sharpe on net_profit_pct
+        ret_series = df["net_profit_pct"] / 100
+        sharpe = 0.0
+        if ret_series.std() > 0:
+            sharpe = float(ret_series.mean() / ret_series.std() * (252 ** 0.5))
 
-        total_trades = len(df_trades)
-        winning_trades = df_trades[df_trades['profit'] > 0]
-        losing_trades = df_trades[df_trades['profit'] <= 0]
+        # Max drawdown
+        capital        = 100_000.0
+        invest_per_trade = capital / 10
+        cap_hist       = [capital]
+        for _, row in df.sort_values("exit_date").iterrows():
+            shares  = invest_per_trade / row["entry_price"]
+            capital += row["net_profit"] * shares
+            cap_hist.append(capital)
+        s    = pd.Series(cap_hist)
+        peak = s.expanding().max()
+        dd   = ((s - peak) / peak).min()
 
-        win_rate = (len(winning_trades) / total_trades) * 100 if total_trades > 0 else 0
-        total_profit = df_trades['profit'].sum()
-        avg_profit_percent = df_trades['profit_percent'].mean()
+        # By exit reason
+        reason_counts = df["exit_reason"].value_counts().to_dict()
 
-        print("\n--- Backtest Results ---")
-        print(f"Total Trades: {total_trades}")
-        print(f"Winning Trades: {len(winning_trades)}")
-        print(f"Losing Trades: {len(losing_trades)}")
-        print(f"Win Rate: {win_rate:.2f}%")
-        print(f"Total Profit: {total_profit:.2f}")
-        print(f"Average Profit per trade: {avg_profit_percent:.2f}%")
+        return {
+            "total_trades":   n,
+            "wins":           wins,
+            "losses":         n - wins,
+            "win_rate":       round(wins / n, 4) if n else 0,
+            "avg_profit_pct": round(avg, 2),
+            "total_profit":   round(total, 2),
+            "sharpe":         round(sharpe, 2),
+            "max_drawdown":   round(float(dd), 4),
+            "stop_loss_exits":   reason_counts.get("stop_loss",   0),
+            "take_profit_exits": reason_counts.get("take_profit", 0),
+            "time_exits":        reason_counts.get("time",        0),
+        }
 
-        # Calculate Sharpe Ratio
-        df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
-        df_trades = df_trades.sort_values(by='exit_date')
-        daily_returns = df_trades.set_index('exit_date')['profit_percent'] / 100
-        
-        if daily_returns.std() != 0 and not np.isnan(daily_returns.std()):
-            sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * (252**0.5)
-        else:
-            sharpe_ratio = 0
-
-        # Calculate Max Drawdown
-        initial_capital = 100000
-        capital = initial_capital
-        capital_history = [initial_capital]
-        # Assuming equal investment in each trade
-        investment_amount = initial_capital / 10 
-        for _, trade in df_trades.iterrows():
-            # Profit is per share, let's assume we buy a fixed amount
-            num_shares = investment_amount / trade['entry_price']
-            capital += trade['profit'] * num_shares
-            capital_history.append(capital)
-        
-        capital_series = pd.Series(capital_history)
-        peak = capital_series.expanding(min_periods=1).max()
-        drawdown = (capital_series - peak) / peak
-        max_drawdown = drawdown.min()
+    def _print_summary(self, s: dict):
+        print("\n─── Backtest Results ───────────────────────────")
+        print(f"  Trades : {s['total_trades']}  (W {s['wins']} / L {s['losses']})")
+        print(f"  Win Rate       : {s['win_rate']*100:.1f}%")
+        print(f"  Avg Net P&L    : {s['avg_profit_pct']:+.2f}%")
+        print(f"  Total Profit   : {s['total_profit']:+,.0f}")
+        print(f"  Sharpe         : {s['sharpe']:.2f}")
+        print(f"  Max Drawdown   : {s['max_drawdown']*100:.1f}%")
+        print(f"  Exits  SL:{s['stop_loss_exits']}  TP:{s['take_profit_exits']}  Time:{s['time_exits']}")
+        print("────────────────────────────────────────────────\n")
 
 
-        print(f"Sharpe Ratio (annualized): {sharpe_ratio:.2f}")
-        print(f"Max Drawdown: {max_drawdown:.2%}")
-        print("------------------------\n")
-        
-        print("Example Trades:")
-        print(df_trades.head())
-
-
-if __name__ == '__main__':
-    # This will backtest the strategy for a few tickers from 2025-10-01 to 2026-03-27
+if __name__ == "__main__":
     TICKERS_DIR = os.path.join(os.path.dirname(__file__), "data", "ohlcv")
-    all_files = glob.glob(os.path.join(TICKERS_DIR, "*.csv"))
-    
-    # Extract tickers from file names
-    tickers_to_test = list(set([os.path.basename(f).split('_')[0] for f in all_files if not os.path.basename(f).startswith('00')]))
+    all_files   = glob.glob(os.path.join(TICKERS_DIR, "*.csv"))
+    tickers     = list({os.path.basename(f).split("_")[0] for f in all_files})[:10]
 
-    # Limit to a few tickers for a quick test
-    tickers_to_test = tickers_to_test[:10]
-
-    backtester = Backtester(start_date="2025-10-01", end_date="2026-03-27")
-    backtester.run(
-        tickers_to_test, 
-        holding_days=10, 
-        stop_loss_pct=0.03, 
-        take_profit_pct=0.1,
-        commission_pct=0.001425 * 2 # buy and sell
+    bt = Backtester(start_date="2025-01-01", end_date="2026-04-01")
+    trades_df, summary = bt.run(
+        tickers,
+        holding_days    = 5,
+        stop_loss_pct   = 0.05,
+        take_profit_pct = 0.10,
+        commission_pct  = 0.001425 * 2,
     )
+    if not trades_df.empty:
+        print(trades_df[["ticker", "entry_date", "exit_date",
+                          "profit_pct", "net_profit_pct", "exit_reason"]].to_string(index=False))

@@ -405,6 +405,29 @@ def send_stock_report(base_dir):
     df_mr  = df_trend[df_trend['category'] == 'mean_reversion']
     df_hv  = df_trend[df_trend['category'] == 'high_value_moat']
 
+    # ── Per-ticker historical win rate lookup ─────────────────────────────────
+    _ticker_wr: dict = {}
+    try:
+        from tws.prediction_tracker import _load_history
+        hist = _load_history(base_dir)
+        resolved = hist[(hist['status'] == 'resolved') & (hist['market'] == 'TW')]
+        if not resolved.empty:
+            for tkr, grp in resolved.groupby('ticker'):
+                n    = len(grp)
+                wins = int(grp['win_open'].sum())
+                _ticker_wr[str(tkr)] = (wins, n)
+    except Exception:
+        pass
+
+    def _wr_tag(ticker: str) -> str:
+        """Return a short win-rate badge string, or empty string if no history."""
+        if ticker not in _ticker_wr:
+            return ''
+        wins, n = _ticker_wr[ticker]
+        pct = wins / n * 100
+        icon = '✅' if pct >= 60 else ('⚠️' if pct >= 40 else '❌')
+        return f'  {icon}歷史勝率 {wins}/{n} ({pct:.0f}%)'
+
     # ── Helper to format a single signal row ─────────────────────────────────
     def _row_line(rank, row, show_moat=False):
         t    = str(row['ticker'])
@@ -439,11 +462,21 @@ def send_stock_report(base_dir):
         except (ValueError, TypeError):
             f_str = ''
 
+        wr = _wr_tag(t)
+
+        # MA120 slope warning (declining trend = higher risk)
+        try:
+            slope = float(row.get('ma120_slope', 0) or 0)
+            declining = str(row.get('ma120_declining', '')).lower() in ('true', '1')
+            slope_warn = f'  ⚠️MA120下滑{slope:+.1f}%' if declining else ''
+        except (ValueError, TypeError):
+            slope_warn = ''
+
         if show_moat:
             details = '  '.join(filter(None, [f_str, sent_e]))
             return (
                 f"*{rank}\\. {t} {name}* {ind}\n"
-                f"   ${price}  RSI {rsi}  ⭐{score}\n"
+                f"   ${price}  RSI {rsi}  ⭐{score}{wr}{slope_warn}\n"
                 f"   {details}"
             )
         else:
@@ -459,7 +492,7 @@ def send_stock_report(base_dir):
             details = '  '.join(filter(None, [vol_str, fnet_str, sent_e]))
             return (
                 f"*{rank}\\. {t} {name}* {ind}\n"
-                f"   ${price}  RSI {rsi}  Bias {bias}%  ⭐{score}\n"
+                f"   ${price}  RSI {rsi}  Bias {bias}%  ⭐{score}{wr}{slope_warn}\n"
                 f"   {details}"
             )
 

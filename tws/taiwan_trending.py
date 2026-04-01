@@ -205,13 +205,22 @@ def apply_filters(df):
     bias     = (price - ma20) / ma20 * 100 if ma20 != 0 else 0.0
     vol_ratio = float(last['vol_ratio']) if has_volume and not np.isnan(last.get('vol_ratio', np.nan)) else None
 
+    # --- MA120 slope (20-day look-back) ---
+    # A declining MA120 means the long-term trend is weakening; this is a
+    # significant risk factor for mean-reversion trades ("catching a falling knife").
+    ma120_20d_ago = float(df['MA120'].iloc[-21]) if len(df) >= 141 else ma120
+    ma120_slope   = (ma120 - ma120_20d_ago) / ma120_20d_ago * 100   # % change over 20 days
+    ma120_declining = ma120_slope < -0.5   # more than 0.5% decline over 20 days
+
     metrics.update({
-        'price': price,
-        'MA120': round(ma120, 2),
-        'MA20': round(ma20, 2),
-        'RSI': round(rsi, 2),
-        'bias': round(bias, 2),
-        'vol_ratio': round(vol_ratio, 2) if vol_ratio is not None else None,
+        'price':         price,
+        'MA120':         round(ma120, 2),
+        'MA20':          round(ma20, 2),
+        'RSI':           round(rsi, 2),
+        'bias':          round(bias, 2),
+        'vol_ratio':     round(vol_ratio, 2) if vol_ratio is not None else None,
+        'ma120_slope':   round(ma120_slope, 2),
+        'ma120_declining': ma120_declining,
     })
 
     # --- Hard gates ---
@@ -222,11 +231,12 @@ def apply_filters(df):
     reasons.append(f"{'PASS' if is_healthy  else 'FAIL'}:MA120 health (price {'>' if is_healthy else '<='} MA120)")
     reasons.append(f"{'PASS' if is_pullback else 'FAIL'}:Pullback (bias={bias:.1f}%, need <-2%)")
     reasons.append(f"{'PASS' if is_oversold else 'FAIL'}:RSI oversold (RSI={rsi:.1f}, need <35)")
+    if ma120_declining:
+        reasons.append(f"WARN:MA120 declining ({ma120_slope:+.2f}% over 20d) — trend weakening")
 
     is_signal = is_healthy and is_pullback and is_oversold
 
     # --- Signal quality score (0–10) ---
-    # Only meaningful when signal fires, but always computed for ranking/display.
     score = 0.0
     if is_signal:
         # RSI depth: 35 → 0 maps to 0 → 4 pts
@@ -244,6 +254,9 @@ def apply_filters(df):
         margin = (price - ma120) / ma120 * 100
         if margin > 5.0:
             score += 1.0
+        # MA120 slope penalty: declining trend is riskier
+        if ma120_declining:
+            score = max(0.0, score - 1.5)
 
     metrics['score'] = round(score, 2)
 
