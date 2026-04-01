@@ -106,9 +106,90 @@ def run_us_trending(base_dir: str):
         )
         print(f"[OK] US trending stocks saved to {output_file}")
     else:
-        if os.path.exists(output_file):
-            os.remove(output_file)
-        print("[!] No US stocks matching the signal today.")
+        print("[!] No US stocks matching the signal today — fetching Finviz watch-list...")
+        watch_rows = _fetch_finviz_watchlist()
+        if watch_rows:
+            pd.DataFrame(watch_rows).to_csv(output_file, index=False, encoding="utf-8-sig")
+            print(f"[OK] US watch-list: {len(watch_rows)} finviz candidates saved to {output_file}")
+        else:
+            if os.path.exists(output_file):
+                os.remove(output_file)
+            print("[!] Finviz watch-list also empty — no output file written.")
+
+
+def _fetch_finviz_watchlist(max_results: int = 10) -> list:
+    """
+    Fetch near-oversold US stocks from Finviz as a watch-list fallback.
+    Tries RSI<30 first; widens to RSI<45 if fewer than 5 results.
+    Returns list of row dicts with the standard current_trending.csv schema.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        from us.finviz_data import get_screener_results
+    except ImportError:
+        return []
+
+    def _to_rows(df: pd.DataFrame) -> list:
+        rows = []
+        for _, r in df.iterrows():
+            try:
+                rsi   = float(str(r.get("RSI (14)", "") or "").replace("%", "") or "nan")
+                price = float(str(r.get("Price", "") or "").replace(",", "") or "nan")
+            except ValueError:
+                continue
+            if np.isnan(rsi) or np.isnan(price):
+                continue
+            rows.append({
+                "ticker":           str(r.get("Ticker", "")),
+                "is_signal":        False,
+                "category":         "finviz_watch",
+                "score":            0.0,
+                "price":            round(price, 2),
+                "MA120":            None,
+                "MA20":             None,
+                "RSI":              round(rsi, 1),
+                "bias":             None,
+                "vol_ratio":        None,
+                "foreign_net":      None,
+                "f5":               None,
+                "f20":              None,
+                "f60":              None,
+                "f_zscore":         None,
+                "short_interest":   None,
+                "news_sentiment":   0.0,
+                "last_date":        today,
+                "fv_pe":            r.get("P/E"),
+                "fv_eps":           r.get("EPS (ttm)"),
+                "fv_sector":        r.get("Sector", ""),
+                "fv_target_price":  r.get("Target Price"),
+                "fv_analyst_rating": r.get("Analyst Recom.", ""),
+            })
+        return rows
+
+    # Try RSI < 30 (deeply oversold)
+    try:
+        df30 = get_screener_results(
+            filters={"Country": "USA", "RSI (14)": "Oversold (30)"},
+            order_by="RSI (14)",
+        )
+        rows = _to_rows(df30)
+        if len(rows) >= 5:
+            return sorted(rows, key=lambda x: x["RSI"])[:max_results]
+    except Exception as e:
+        print(f"   [finviz] RSI<30 screen failed: {e}")
+
+    # Widen to RSI < 45 (near-oversold)
+    try:
+        df45 = get_screener_results(
+            filters={"Country": "USA", "RSI (14)": "Oversold (45)"},
+            order_by="RSI (14)",
+        )
+        rows = _to_rows(df45)
+        return sorted(rows, key=lambda x: x["RSI"])[:max_results]
+    except Exception as e:
+        print(f"   [finviz] RSI<45 screen failed: {e}")
+
+    return []
 
 
 if __name__ == "__main__":

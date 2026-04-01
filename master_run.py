@@ -86,6 +86,14 @@ def run_us_pipeline():
     except Exception as e:
         print(f"[!] US company mapping failed (non-fatal): {e}")
 
+    # Step 4: Send US Telegram report (signals or watch-list)
+    print("[Step 4] Sending US Telegram report...")
+    try:
+        from us.us_notifier import send_us_report
+        send_us_report(BASE_DIR)
+    except Exception as e:
+        print(f"[!] US Telegram report failed (non-fatal): {e}")
+
 
 def _tw_session() -> bool:
     """True during Taiwan trading window (08:00–14:00 TST, Mon–Fri).

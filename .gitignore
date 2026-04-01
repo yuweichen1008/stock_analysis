@@ -3,4 +3,9 @@ data/
 *.csv
 daily_run.log
 __pycache__/
-*.logdashboard/config.yaml
+*.log
+dashboard/config.yaml
+
+# CTBC browser profile & session (contains cookies / binaries — never commit)
+brokers/.ctbc_profile/
+brokers/.ctbc_session.json

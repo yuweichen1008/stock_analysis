@@ -257,25 +257,33 @@ def resolve_outcomes(base_dir: str) -> int:
     return resolved_count
 
 
-def prediction_summary(base_dir: str) -> dict:
+def prediction_summary(base_dir: str, market: str = None) -> dict:
     """
     Return a summary dict with overall and segmented win rates.
     Useful for CLI output or quick health-check.
+
+    Args:
+        base_dir: repo root directory
+        market:   "TW" | "US" to filter by market; None = all markets combined
     """
-    history = _load_history(base_dir)
+    history  = _load_history(base_dir)
     resolved = history[history["status"] == _RESOLVED]
+    pending  = history[history["status"] == _PENDING]
+    if market:
+        resolved = resolved[resolved["market"] == market]
+        pending  = pending[pending["market"] == market]
     if resolved.empty:
-        return {"total": 0}
+        return {"total": 0, "pending": int(len(pending))}
 
     total     = len(resolved)
     win_open  = int(resolved["win_open"].sum())
     win_close = int(resolved["win_close"].sum())
 
     return {
-        "total":         total,
-        "pending":       int((history["status"] == _PENDING).sum()),
-        "win_open":      win_open,
-        "win_close":     win_close,
+        "total":          total,
+        "pending":        int(len(pending)),
+        "win_open":       win_open,
+        "win_close":      win_close,
         "win_rate_open":  round(win_open  / total * 100, 1),
         "win_rate_close": round(win_close / total * 100, 1),
         "avg_open_ret":   round(resolved["open_return_pct"].mean(),  2),
