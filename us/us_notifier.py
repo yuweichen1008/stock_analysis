@@ -80,8 +80,8 @@ def send_us_report(base_dir: str) -> None:
         avg_ret  = summary.get("avg_open_ret", 0)
         sign     = "+" if avg_ret >= 0 else ""
         lines += [
-            "📊 *Historical Win Rate \\(US\\)*",
-            f"  Open\\-day: *{wr_open}%*  \\|  Close: {wr_close}%",
+            "📊 *Historical Win Rate (US)*",
+            f"  Open-day: *{wr_open}%*  |  Close: {wr_close}%",
             f"  {total} resolved  ·  {pending} pending  ·  Avg {sign}{avg_ret}%",
             "",
         ]
@@ -90,7 +90,7 @@ def send_us_report(base_dir: str) -> None:
 
     # Signal list
     if not signals.empty:
-        lines.append(f"🎯 *Today's Signals \\({len(signals)}\\)*")
+        lines.append(f"🎯 *Today's Signals ({len(signals)})*")
         lines.append("")
         for _, r in signals.sort_values("score", ascending=False).head(10).iterrows():
             ticker = str(r["ticker"])
@@ -107,15 +107,16 @@ def send_us_report(base_dir: str) -> None:
             score_str = f"⭐{score:.1f}"
             rsi_str   = f"RSI {float(rsi):.1f}" if rsi else ""
             bias_str  = f"Bias {float(bias):+.1f}%" if bias else ""
-            vol_str   = f"Vol {float(vol):.1f}×" if vol else ""
+            vol_str   = f"Vol {float(vol):.1f}x" if vol else ""
             pe_str    = f"PE: {fv_pe}" if fv_pe else ""
             eps_str   = f"EPS: ${fv_eps}" if fv_eps else ""
+            sec_str   = f"[{fv_sec}]" if fv_sec else ""
 
             lines.append(f"  *{ticker}*  {price_str}  {score_str}")
             detail = "  ".join(filter(None, [rsi_str, bias_str, vol_str]))
             if detail:
                 lines.append(f"    {detail}")
-            fund = "  ".join(filter(None, [pe_str, eps_str, f"\\[{fv_sec}\\]" if fv_sec else ""]))
+            fund = "  ".join(filter(None, [pe_str, eps_str, sec_str]))
             if fund:
                 lines.append(f"    {fund}")
             lines.append("")
@@ -123,9 +124,9 @@ def send_us_report(base_dir: str) -> None:
     elif not watchlist.empty:
         lines += [
             "⚠️ *No signals today*",
-            "_Market not oversold enough for mean\\-reversion entries\\._",
+            "_Market not oversold enough for mean-reversion entries._",
             "",
-            f"👀 *Finviz Watch\\-List* \\({len(watchlist)} near\\-oversold\\)",
+            f"👀 *Finviz Watch-List* ({len(watchlist)} near-oversold)",
             "",
         ]
         for _, r in watchlist.head(8).iterrows():
@@ -137,7 +138,7 @@ def send_us_report(base_dir: str) -> None:
 
             price_str  = f"${float(price):.2f}" if price else ""
             rsi_str    = f"RSI {float(rsi):.1f}" if rsi else ""
-            sec_str    = f"\\[{fv_sec}\\]" if fv_sec else ""
+            sec_str    = f"[{fv_sec}]" if fv_sec else ""
             rating_str = fv_rating if fv_rating else ""
 
             parts = "  ".join(filter(None, [price_str, rsi_str, sec_str, rating_str]))
@@ -145,8 +146,8 @@ def send_us_report(base_dir: str) -> None:
         lines.append("")
     else:
         lines += [
-            "⚠️ *No signals and no watch\\-list data today*",
-            "_Re\\-run `master_run.py \\-\\-market US` to refresh\\._",
+            "⚠️ *No signals and no watch-list data today*",
+            "_Re-run `master_run.py --market US` to refresh._",
             "",
         ]
 
