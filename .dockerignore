@@ -1,0 +1,12 @@
+.env
+*.log
+daily_run.log
+data/
+data_us/
+__pycache__/
+*.pyc
+.git/
+brokers/.ctbc_profile/
+brokers/.ctbc_session.json
+dashboard/config.yaml
+.streamlit/secrets.toml

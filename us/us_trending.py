@@ -176,7 +176,7 @@ def _fetch_finviz_watchlist(max_results: int = 10) -> list:
             })
         return rows
 
-    # Try RSI < 30 (deeply oversold)
+    # Try RSI < 30 (deeply oversold) — "Oversold (30)" is a valid Finviz filter
     try:
         df30 = get_screener_results(
             filters={"Country": "USA", "RSI (14)": "Oversold (30)"},
@@ -188,16 +188,20 @@ def _fetch_finviz_watchlist(max_results: int = 10) -> list:
     except Exception as e:
         print(f"   [finviz] RSI<30 screen failed: {e}")
 
-    # Widen to RSI < 45 (near-oversold)
+    # Widen: fetch without RSI filter, sort ascending, keep RSI < 45 client-side
+    # "Oversold (45)" is NOT a valid Finviz filter — we filter the DataFrame instead
     try:
-        df45 = get_screener_results(
-            filters={"Country": "USA", "RSI (14)": "Oversold (45)"},
+        df_broad = get_screener_results(
+            filters={"Country": "USA", "Market Cap.": "Mid+ (over $2bln)"},
             order_by="RSI (14)",
         )
-        rows = _to_rows(df45)
-        return sorted(rows, key=lambda x: x["RSI"])[:max_results]
+        if not df_broad.empty and "RSI (14)" in df_broad.columns:
+            df_broad["RSI (14)"] = pd.to_numeric(df_broad["RSI (14)"], errors="coerce")
+            df_broad = df_broad[df_broad["RSI (14)"] < 45].sort_values("RSI (14)")
+        rows = _to_rows(df_broad)
+        return rows[:max_results]
     except Exception as e:
-        print(f"   [finviz] RSI<45 screen failed: {e}")
+        print(f"   [finviz] broad RSI screen failed: {e}")
 
     return []
 

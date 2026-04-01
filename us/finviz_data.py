@@ -148,6 +148,77 @@ def enrich_signals_with_finviz(signals_df: pd.DataFrame, delay: float = 0.5) -> 
     return signals_df.merge(fv_df, on="ticker", how="left")
 
 
+def get_market_summary() -> dict:
+    """
+    Return a snapshot of today's US market: index returns + sector performance.
+
+    Pulls index data from yfinance (always available) and sector performance
+    from the Finviz screener (best-effort, falls back gracefully).
+
+    Returns dict with keys:
+        indices   — list of {symbol, name, change_pct}
+        sectors   — list of {sector, avg_change_pct, n_stocks}  (may be empty)
+        top_movers — list of {ticker, company, change_pct, sector} (top 5 up + down)
+    """
+    result: dict = {"indices": [], "sectors": [], "top_movers": []}
+
+    # ── Index performance via yfinance ────────────────────────────────────────
+    try:
+        import yfinance as yf
+        index_map = {
+            "^GSPC": "S&P 500",
+            "^IXIC": "NASDAQ",
+            "^DJI":  "DOW",
+            "^VIX":  "VIX",
+        }
+        for sym, name in index_map.items():
+            try:
+                hist = yf.Ticker(sym).history(period="2d")
+                if len(hist) >= 2:
+                    prev, curr = float(hist["Close"].iloc[-2]), float(hist["Close"].iloc[-1])
+                    chg = (curr - prev) / prev * 100
+                    result["indices"].append({"symbol": sym, "name": name,
+                                              "price": curr, "change_pct": round(chg, 2)})
+            except Exception:
+                pass
+    except ImportError:
+        pass
+
+    # ── Sector performance via Finviz ─────────────────────────────────────────
+    try:
+        df = get_screener_results(
+            filters={"Country": "USA", "Market Cap.": "Large ($10bln to $200bln)"},
+            order_by="Change",
+        )
+        if not df.empty and "Sector" in df.columns and "Change" in df.columns:
+            df["Change"] = pd.to_numeric(
+                df["Change"].astype(str).str.replace("%", ""), errors="coerce"
+            )
+            sector_stats = (
+                df.groupby("Sector")
+                .agg(avg_change_pct=("Change", "mean"), n_stocks=("Ticker", "count"))
+                .reset_index()
+                .sort_values("avg_change_pct", ascending=False)
+            )
+            result["sectors"] = sector_stats.to_dict("records")
+
+            # Top 5 gainers + top 5 losers
+            df_sorted = df.dropna(subset=["Change"]).sort_values("Change", ascending=False)
+            top_up   = df_sorted.head(5)
+            top_down = df_sorted.tail(5).sort_values("Change")
+            for row in pd.concat([top_up, top_down]).itertuples():
+                result["top_movers"].append({
+                    "ticker":     getattr(row, "Ticker", ""),
+                    "company":    getattr(row, "Company", ""),
+                    "change_pct": round(float(getattr(row, "Change", 0) or 0), 2),
+                    "sector":     getattr(row, "Sector", ""),
+                })
+    except Exception as e:
+        logger.debug("get_market_summary: sector fetch failed: %s", e)
+
+    return result
+
+
 def _safe_float(val) -> float | None:
     """Parse a Finviz value string like '24.5' or '24.5B' to float, or None."""
     if val is None:

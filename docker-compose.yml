@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  dashboard:
+    build: .
+    image: stock-dashboard
+    container_name: stock_dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      # Persist all data between container restarts
+      - ./data:/app/data
+      - ./data_us:/app/data_us
+      # Mount .env so secrets never bake into the image
+      - ./.env:/app/.env:ro
+      # Persist CTBC browser profile (cookies/session)
+      - ./brokers/.ctbc_profile:/app/brokers/.ctbc_profile
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Taipei
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Optional: run the analysis pipeline on a schedule via cron inside the container
+  pipeline:
+    build: .
+    image: stock-dashboard
+    container_name: stock_pipeline
+    restart: "no"   # Started manually or via host cron
+    volumes:
+      - ./data:/app/data
+      - ./data_us:/app/data_us
+      - ./.env:/app/.env:ro
+      - ./brokers/.ctbc_profile:/app/brokers/.ctbc_profile
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Taipei
+    command: ["python", "master_run.py"]
+    profiles:
+      - pipeline   # Only starts with: docker compose --profile pipeline up pipeline

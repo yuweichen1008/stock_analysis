@@ -1,0 +1,19 @@
+[server]
+# Set to 0.0.0.0 to accept external connections (needed for Docker/cloud)
+# Override with: streamlit run app.py --server.address=127.0.0.1 for local-only
+address = "0.0.0.0"
+port = 8501
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#26a69a"
+backgroundColor = "#0d1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
+font = "sans serif"
