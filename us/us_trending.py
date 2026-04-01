@@ -70,25 +70,31 @@ def run_us_trending(base_dir: str):
                 pass
 
             row = {
-                "ticker":         ticker,
-                "is_signal":      is_signal,
-                "category":       "mean_reversion" if is_signal else "",
-                "score":          metrics.get("score", 0),
-                "price":          metrics.get("price"),
-                "MA120":          metrics.get("MA120"),
-                "MA20":           metrics.get("MA20"),
-                "RSI":            metrics.get("RSI"),
-                "bias":           metrics.get("bias"),
-                "vol_ratio":      round(last_vol_ratio, 2) if last_vol_ratio is not None else None,
+                "ticker":            ticker,
+                "is_signal":         is_signal,
+                "category":          "mean_reversion" if is_signal else "",
+                "score":             metrics.get("score", 0),
+                "price":             metrics.get("price"),
+                "MA120":             metrics.get("MA120"),
+                "MA20":              metrics.get("MA20"),
+                "RSI":               metrics.get("RSI"),
+                "bias":              metrics.get("bias"),
+                "vol_ratio":         round(last_vol_ratio, 2) if last_vol_ratio is not None else None,
                 # US stocks have no TWSE institutional flow; keep columns for schema parity
-                "foreign_net":    None,
-                "f5":             None,
-                "f20":            None,
-                "f60":            None,
-                "f_zscore":       None,
-                "short_interest": None,
-                "news_sentiment": round(news_sentiment, 3),
-                "last_date":      df.index[-1].strftime("%Y-%m-%d"),
+                "foreign_net":       None,
+                "f5":                None,
+                "f20":               None,
+                "f60":               None,
+                "f_zscore":          None,
+                "short_interest":    None,
+                "news_sentiment":    round(news_sentiment, 3),
+                "last_date":         df.index[-1].strftime("%Y-%m-%d"),
+                # Finviz fundamentals — populated below via enrich_signals_with_finviz()
+                "fv_pe":             None,
+                "fv_eps":            None,
+                "fv_sector":         None,
+                "fv_target_price":   None,
+                "fv_analyst_rating": None,
             }
 
             if is_signal:
@@ -101,9 +107,13 @@ def run_us_trending(base_dir: str):
     print(f"   Scanned: {stats['Total']} | Signals: {stats['Signal']}")
 
     if results:
-        pd.DataFrame(results).sort_values("score", ascending=False).to_csv(
-            output_file, index=False, encoding="utf-8-sig"
-        )
+        results_df = pd.DataFrame(results).sort_values("score", ascending=False)
+        try:
+            from us.finviz_data import enrich_signals_with_finviz
+            results_df = enrich_signals_with_finviz(results_df)
+        except Exception as e:
+            print(f"   [finviz] enrichment skipped: {e}")
+        results_df.to_csv(output_file, index=False, encoding="utf-8-sig")
         print(f"[OK] US trending stocks saved to {output_file}")
     else:
         print("[!] No US stocks matching the signal today — fetching Finviz watch-list...")
