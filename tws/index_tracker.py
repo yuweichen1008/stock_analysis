@@ -2,7 +2,7 @@
 TAIEX Market Oracle — daily bull/bear prediction with scoring.
 
 Prediction algorithm: weighted vote across 5 factors.
-Scoring: |TAIEX change in pts| × 10 → +score if correct, −score if wrong.
+Scoring: fixed game points (SCORE_WIN if correct, SCORE_LOSE if wrong).
 
 History file: data/index/oracle_history.csv
 """
@@ -27,6 +27,10 @@ _COLS = [
     "taiex_open", "taiex_close", "taiex_change_pts",
     "score_pts", "cumulative_score", "is_correct", "status",
 ]
+
+# Game scoring — fixed points regardless of TAIEX movement magnitude
+SCORE_WIN  =  100   # points for a correct prediction
+SCORE_LOSE =  -50   # points for a wrong prediction
 
 _FACTOR_WEIGHTS = {
     "spx_overnight":  0.30,
@@ -285,7 +289,7 @@ def resolve_today_prediction(base_dir: str) -> bool:
         (direction == "Bull" and change_pts > 0) or
         (direction == "Bear" and change_pts < 0)
     )
-    score_pts = abs(change_pts) * 10 * (1 if is_correct else -1)
+    score_pts = SCORE_WIN if is_correct else SCORE_LOSE
 
     df.at[idx, "taiex_open"]      = round(taiex_open, 1)
     df.at[idx, "taiex_close"]     = round(taiex_close, 1)
@@ -354,3 +358,159 @@ def oracle_stats(base_dir: str) -> dict:
         "avg_score_per_day": round(cumulative_score / total, 1) if total else 0.0,
         "streak":            streak,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backtesting
+# ─────────────────────────────────────────────────────────────────────────────
+
+def backtest_oracle(
+    start_date: str,
+    end_date: str,
+    weights: dict | None = None,
+    score_win: int = SCORE_WIN,
+    score_lose: int = SCORE_LOSE,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Simulate the prediction algorithm on historical TAIEX data.
+
+    Uses 3 market-data factors (SPX overnight, TAIEX momentum, VIX) since
+    signal_count and tw_win_rate are not available historically.
+
+    Parameters
+    ----------
+    start_date, end_date : "YYYY-MM-DD" strings (inclusive)
+    weights : dict with keys spx_overnight, taiex_momentum, vix_fear.
+              Weights are normalised internally so they don't need to sum to 1.
+    score_win / score_lose : game points for correct / wrong predictions.
+
+    Returns
+    -------
+    results_df : pd.DataFrame — one row per simulated day
+    summary    : dict — aggregate stats
+    """
+    if weights is None:
+        weights = {"spx_overnight": 0.40, "taiex_momentum": 0.35, "vix_fear": 0.25}
+
+    total_w = sum(weights.values()) or 1.0
+
+    # Fetch historical data with a buffer before start for prev-day calculations
+    buf_start = (pd.Timestamp(start_date) - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+
+    def _dl(ticker):
+        try:
+            h = yf.Ticker(ticker).history(start=buf_start, end=end_date, interval="1d")
+            if h.empty:
+                return pd.DataFrame()
+            h.index = h.index.tz_localize(None) if h.index.tzinfo else h.index
+            h.index = pd.DatetimeIndex([pd.Timestamp(str(i.date())) for i in h.index])
+            return h
+        except Exception as e:
+            logger.warning("backtest download failed for %s: %s", ticker, e)
+            return pd.DataFrame()
+
+    twii = _dl("^TWII")
+    spx  = _dl("^GSPC")
+    vix  = _dl("^VIX")
+
+    if twii.empty:
+        return pd.DataFrame(), {}
+
+    # Trading days in range
+    range_mask = (twii.index >= pd.Timestamp(start_date)) & (twii.index <= pd.Timestamp(end_date))
+    trade_days = twii.index[range_mask]
+
+    results = []
+    for date in trade_days:
+        twii_pos = twii.index.get_loc(date)
+        if twii_pos < 2:
+            continue
+        prev_date = twii.index[twii_pos - 1]
+
+        # ── SPX overnight ────────────────────────────────────────────────────
+        spx_val  = None
+        spx_bull = False
+        if not spx.empty and prev_date in spx.index:
+            spx_pos = spx.index.get_loc(prev_date)
+            if spx_pos >= 1:
+                c0 = float(spx["Close"].iloc[spx_pos - 1])
+                c1 = float(spx["Close"].iloc[spx_pos])
+                spx_val  = round((c1 - c0) / c0 * 100, 2)
+                spx_bull = spx_val > 0.3
+
+        # ── TAIEX momentum (prev-day %) ──────────────────────────────────────
+        tw_val  = None
+        tw_bull = False
+        prev2 = twii.index[twii_pos - 2]
+        c0    = float(twii.at[prev2,     "Close"])
+        c1    = float(twii.at[prev_date, "Close"])
+        tw_val  = round((c1 - c0) / c0 * 100, 2)
+        tw_bull = tw_val > 0.5
+
+        # ── VIX ──────────────────────────────────────────────────────────────
+        vix_val  = None
+        vix_bull = False
+        if not vix.empty and prev_date in vix.index:
+            vix_val  = round(float(vix.at[prev_date, "Close"]), 1)
+            vix_bull = vix_val < 20
+
+        # ── Vote ─────────────────────────────────────────────────────────────
+        bull_score = 0.0
+        if spx_bull:  bull_score += weights.get("spx_overnight",  0.40)
+        if tw_bull:   bull_score += weights.get("taiex_momentum", 0.35)
+        if vix_bull:  bull_score += weights.get("vix_fear",       0.25)
+        bull_score /= total_w
+
+        direction      = "Bull" if bull_score >= 0.5 else "Bear"
+        confidence_pct = round(max(bull_score, 1.0 - bull_score) * 100, 1)
+
+        # ── Actual ───────────────────────────────────────────────────────────
+        taiex_open  = float(twii.at[date, "Open"])
+        taiex_close = float(twii.at[date, "Close"])
+        change_pts  = taiex_close - taiex_open
+        actual_dir  = "Bull" if change_pts > 0 else "Bear"
+        is_correct  = direction == actual_dir
+        score_pts   = score_win if is_correct else score_lose
+
+        results.append({
+            "date":             date.strftime("%Y-%m-%d"),
+            "direction":        direction,
+            "actual_dir":       actual_dir,
+            "confidence_pct":   confidence_pct,
+            "spx_ret":          spx_val,
+            "taiex_mom":        tw_val,
+            "vix":              vix_val,
+            "taiex_open":       round(taiex_open,  1),
+            "taiex_close":      round(taiex_close, 1),
+            "taiex_change_pts": round(change_pts,  1),
+            "is_correct":       is_correct,
+            "score_pts":        score_pts,
+        })
+
+    if not results:
+        return pd.DataFrame(), {}
+
+    df = pd.DataFrame(results)
+    df["cumulative_score"] = df["score_pts"].cumsum()
+
+    total = len(df)
+    wins  = int(df["is_correct"].sum())
+
+    # Best streak
+    best_streak = cur = 0
+    for v in df["is_correct"]:
+        cur = cur + 1 if v else 0
+        best_streak = max(best_streak, cur)
+
+    summary = {
+        "total":             total,
+        "wins":              wins,
+        "losses":            total - wins,
+        "win_rate_pct":      round(wins / total * 100, 1) if total else 0.0,
+        "cumulative_score":  round(float(df["cumulative_score"].iloc[-1]), 0),
+        "avg_score_per_day": round(float(df["score_pts"].mean()), 1),
+        "best_streak":       best_streak,
+        "best_day":          float(df["score_pts"].max()),
+        "worst_day":         float(df["score_pts"].min()),
+    }
+    return df, summary
