@@ -32,6 +32,7 @@ def _bootstrap_data_dirs():
         BASE_DIR / "data" / "tickers",
         BASE_DIR / "data" / "ohlcv",
         BASE_DIR / "data" / "predictions",
+        BASE_DIR / "data" / "index",
         BASE_DIR / "data_us" / "ohlcv",
     ]
     for d in dirs:

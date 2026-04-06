@@ -1047,3 +1047,126 @@ def send_market_overview(base_dir: str):
             tool.send_markdown(intel_text)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Market Oracle — morning prediction + EOD result messages
+# ---------------------------------------------------------------------------
+
+def send_market_prediction(base_dir: str) -> None:
+    """
+    Send today's TAIEX bull/bear prediction to Telegram.
+    Called at ~08:30 TST in run_tws_pipeline Step 0.
+    """
+    import json as _json
+    from datetime import datetime as _dt
+    from tws.index_tracker import _load_history, oracle_stats
+
+    load_dotenv(os.path.join(base_dir, ".env"))
+    tool     = TelegramTool(os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
+    today    = _dt.now().strftime("%Y-%m-%d")
+    history  = _load_history(base_dir)
+
+    today_rows = history[history["date"] == today] if not history.empty else pd.DataFrame()
+    if today_rows.empty:
+        tool.send_markdown(f"🔮 *台股大盤 Oracle — {today}*\n\n_今日預測尚未生成。_")
+        return
+
+    row        = today_rows.iloc[-1]
+    direction  = row.get("direction", "?")
+    conf       = row.get("confidence_pct", 0)
+    dir_emoji  = "🟢" if direction == "Bull" else "🔴"
+    dir_label  = "多方 (Bull)" if direction == "Bull" else "空方 (Bear)"
+
+    # Factor breakdown
+    factor_lines = []
+    _factor_labels = {
+        "spx_overnight":  "SPX夜盤",
+        "taiex_momentum": "台股動能",
+        "vix_fear":       "VIX恐慌",
+        "signal_count":   "超跌訊號",
+        "tw_win_rate":    "近期勝率",
+    }
+    _factor_units = {
+        "spx_overnight": "%", "taiex_momentum": "%",
+        "vix_fear": "", "signal_count": "檔", "tw_win_rate": "%",
+    }
+    try:
+        factors = _json.loads(str(row.get("factors_json") or "{}"))
+        for fname, finfo in factors.items():
+            val      = finfo.get("value")
+            is_bull  = finfo.get("bull", False)
+            unit     = _factor_units.get(fname, "")
+            label    = _factor_labels.get(fname, fname)
+            vote     = "✅ (看多)" if is_bull else "❌ (看空)"
+            val_str  = f"{val}{unit}" if val is not None else "N/A"
+            factor_lines.append(f"  {label}: {val_str} {vote}")
+    except Exception:
+        pass
+
+    # Oracle stats
+    stats = oracle_stats(base_dir)
+    stats_line = ""
+    if stats["total"] > 0:
+        stats_line = (
+            f"\n📈 *歷史戰績*  勝率 {stats['win_rate_pct']:.0f}%  "
+            f"累計 {stats['cumulative_score']:+,.0f}分  "
+            f"({stats['wins']}勝{stats['losses']}負)"
+        )
+
+    lines = [
+        f"🔮 *台股大盤預測 — {today}*",
+        "",
+        f"方向: {dir_emoji} *{dir_label}*  信心: {conf:.0f}%",
+        "",
+        "📊 *因子分析*",
+    ] + factor_lines + [stats_line]
+
+    tool.send_markdown("\n".join(lines))
+
+
+def send_market_result(base_dir: str) -> None:
+    """
+    Send today's TAIEX Oracle result to Telegram after resolution.
+    Called at ~14:05 TST after resolve_today_prediction().
+    """
+    from datetime import datetime as _dt
+    from tws.index_tracker import _load_history, oracle_stats
+
+    load_dotenv(os.path.join(base_dir, ".env"))
+    tool     = TelegramTool(os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
+    today    = _dt.now().strftime("%Y-%m-%d")
+    history  = _load_history(base_dir)
+
+    if history.empty:
+        return
+    today_rows = history[(history["date"] == today) & (history["status"] == "resolved")]
+    if today_rows.empty:
+        return
+
+    row        = today_rows.iloc[-1]
+    direction  = row.get("direction", "?")
+    dir_emoji  = "🟢" if direction == "Bull" else "🔴"
+    dir_label  = "多方" if direction == "Bull" else "空方"
+    is_correct = str(row.get("is_correct", "")).lower() in ("true", "1")
+    outcome    = "✅ 正確" if is_correct else "❌ 錯誤"
+    change_pts = float(row.get("taiex_change_pts") or 0)
+    score_pts  = float(row.get("score_pts") or 0)
+
+    stats = oracle_stats(base_dir)
+    streak_line = f"  連{'勝' if is_correct else '敗'}: {stats['streak']}" if stats["streak"] > 1 else ""
+
+    lines = [
+        f"📊 *今日大盤結算 — {today}*",
+        "",
+        f"預測: {dir_emoji}{dir_label}  實際: {outcome}",
+        f"大盤變動: *{change_pts:+.0f}點*  得分: *{score_pts:+.0f}分*",
+        "",
+        "🏆 *累計戰績*",
+        f"  勝率: {stats['win_rate_pct']:.0f}%  ({stats['wins']}勝{stats['losses']}負)",
+        f"  累計分數: {stats['cumulative_score']:+,.0f}分",
+    ]
+    if streak_line:
+        lines.append(streak_line)
+
+    tool.send_markdown("\n".join(lines))

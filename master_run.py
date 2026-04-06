@@ -21,12 +21,33 @@ def run_tws_pipeline():
 
     print(f"🚀 TWS 自動化流程啟動")
 
+    # Step 0: Morning TAIEX Oracle prediction
+    print("[Step 0] 發送大盤多空預測...")
+    try:
+        from tws.index_tracker import compute_prediction, save_prediction
+        from tws.telegram_notifier import send_market_prediction
+        pred = compute_prediction(BASE_DIR)
+        save_prediction(BASE_DIR, pred)
+        send_market_prediction(BASE_DIR)
+    except Exception as e:
+        print(f"[!] Market prediction failed (non-fatal): {e}")
+
     # Step 1: 數據同步 — downloads fresh OHLCV so outcome resolution has today's prices
     engine.sync_daily_data()
 
     # Step 1b: Resolve previous predictions now that OHLCV files are up to date
     print("[Step 1b] 驗證過去預測結果...")
     resolve_outcomes(BASE_DIR)
+
+    # Step 1c: Resolve today's Oracle prediction with fresh TAIEX data
+    print("[Step 1c] 結算今日大盤預測...")
+    try:
+        from tws.index_tracker import resolve_today_prediction
+        from tws.telegram_notifier import send_market_result
+        if resolve_today_prediction(BASE_DIR):
+            send_market_result(BASE_DIR)
+    except Exception as e:
+        print(f"[!] Market result resolution failed (non-fatal): {e}")
 
     # Step 2: 執行趨勢篩選 (掃描 data/ohlcv 中的檔案)
     print("[Step 2] 執行台股趨勢分析...")
