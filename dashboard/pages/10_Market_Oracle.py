@@ -283,8 +283,8 @@ with h2:
 
 st.markdown("---")
 
-tab_today, tab_history, tab_stats, tab_backtest = st.tabs([
-    "🎯 今日預測", "📅 歷史戰績", "📊 統計分析", "🧪 回測模擬"
+tab_today, tab_history, tab_stats, tab_backtest, tab_subscribe = st.tabs([
+    "🎯 今日預測", "📅 歷史戰績", "📊 統計分析", "🧪 回測模擬", "🔔 訂閱通知"
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -730,3 +730,101 @@ with tab_backtest:
                             "大盤變動": st.column_config.NumberColumn("大盤變動", format="%+.0f"),
                         },
                     )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 5 — Subscribe
+# ─────────────────────────────────────────────────────────────────────────────
+
+with tab_subscribe:
+    st.markdown("### 🔔 訂閱 Oracle 每日通知")
+    st.markdown(
+        "每個交易日 **08:00** 送出當日多空預測，**14:05** 結算通知。"
+        "  \n透過 **Telegram** 私訊接收，完全免費。"
+    )
+
+    st.markdown("---")
+
+    col_sub, col_info = st.columns([1, 1], gap="large")
+
+    with col_sub:
+        st.markdown("#### 📬 Telegram 訂閱")
+        tid_input = st.text_input(
+            "你的 Telegram Chat ID",
+            placeholder="例：123456789",
+            help="不知道你的 Chat ID？請見右側說明",
+        )
+        lbl_input = st.text_input("顯示名稱（選填）", placeholder="例：Sami")
+
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            sub_btn = st.button("📬 訂閱", type="primary", use_container_width=True)
+        with col_btn2:
+            unsub_btn = st.button("🔕 取消訂閱", use_container_width=True)
+
+        if sub_btn:
+            if not tid_input.strip():
+                st.error("請輸入 Telegram Chat ID")
+            else:
+                try:
+                    import requests as _req
+                    resp = _req.post(
+                        "http://localhost:8000/api/subscribe",
+                        json={"telegram_id": tid_input.strip(), "label": lbl_input.strip() or None},
+                        timeout=8,
+                    )
+                    if resp.status_code == 200:
+                        st.success("✅ 訂閱成功！請查看你的 Telegram — 已傳送確認訊息。")
+                    elif resp.status_code == 409:
+                        st.info("ℹ️ 此 Chat ID 已訂閱。")
+                    else:
+                        detail = resp.json().get("detail", "訂閱失敗")
+                        st.error(f"❌ {detail}")
+                except Exception as e:
+                    st.error(f"無法連線至 API：{e}")
+
+        if unsub_btn:
+            if not tid_input.strip():
+                st.error("請輸入 Telegram Chat ID")
+            else:
+                try:
+                    import requests as _req
+                    resp = _req.delete(
+                        f"http://localhost:8000/api/subscribe/{tid_input.strip()}",
+                        timeout=8,
+                    )
+                    if resp.status_code == 200:
+                        st.success("已取消訂閱。")
+                    else:
+                        st.error("找不到此訂閱。")
+                except Exception as e:
+                    st.error(f"無法連線至 API：{e}")
+
+    with col_info:
+        st.markdown("#### 📖 如何取得 Telegram Chat ID")
+        st.markdown("""
+1. 在 Telegram 搜尋 **@userinfobot**
+2. 傳送任意訊息（例如 `/start`）
+3. Bot 會回覆你的 **Chat ID**（純數字）
+4. 將該數字貼入左側欄位
+
+---
+**通知內容**
+| 時間 | 訊息 |
+|------|------|
+| 08:00 TST | 🔮 今日多空預測 + 信心指數 |
+| 14:05 TST | 📊 結算 + 大盤變動 + 積分 |
+
+---
+**手機 App**
+下載 Oracle App 直接在手機接收推播通知，並可參與虛擬押注遊戲。
+        """)
+
+    # Current subscriber count (admin view)
+    try:
+        import requests as _req
+        subs_resp = _req.get("http://localhost:8000/api/subscribe/list", timeout=4)
+        if subs_resp.ok:
+            subs = subs_resp.json()
+            st.markdown(f"---\n**目前訂閱人數：{len(subs)}**")
+    except Exception:
+        pass

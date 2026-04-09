@@ -1,5 +1,6 @@
 import argparse
 import os
+import requests
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -16,44 +17,73 @@ from us.us_trending import run_us_trending
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-def run_tws_pipeline():
+API_BASE = os.environ.get("ORACLE_API_BASE", "http://localhost:8000")
+
+
+def _api_call(method: str, path: str, body: dict = None, timeout: int = 5):
+    """Fire-and-forget API call. Non-fatal if the API server is unreachable."""
+    try:
+        url = f"{API_BASE}{path}"
+        requests.request(method, url, json=body or {}, timeout=timeout)
+    except Exception as e:
+        print(f"[!] API call {path} failed (non-fatal): {e}")
+
+
+def run_predict_step():
+    """08:00 TST cron: compute Oracle prediction → Telegram → morning push."""
+    print("🔮 [predict] 計算今日大盤預測...")
+    from tws.index_tracker import compute_prediction, save_prediction
+    from tws.telegram_notifier import send_market_prediction
+    pred = compute_prediction(BASE_DIR)
+    save_prediction(BASE_DIR, pred)
+    send_market_prediction(BASE_DIR)
+    print("[predict] 發送晨間推播 (Expo push + Telegram subscribers)...")
+    _api_call("POST", "/api/notify/broadcast", {"type": "morning"})
+    try:
+        from tws.telegram_notifier import broadcast_to_subscribers
+        n = broadcast_to_subscribers(BASE_DIR, "morning")
+        if n:
+            print(f"[predict] Telegram DM sent to {n} subscriber(s)")
+    except Exception as e:
+        print(f"[!] Telegram subscriber broadcast failed (non-fatal): {e}")
+    print("✅ [predict] 完成")
+
+
+def run_resolve_step():
+    """14:05 TST cron: sync → resolve → settle bets → result push → signals → Telegram."""
     engine = TaiwanStockEngine(BASE_DIR)
 
-    print(f"🚀 TWS 自動化流程啟動")
-
-    # Step 0: Morning TAIEX Oracle prediction
-    print("[Step 0] 發送大盤多空預測...")
-    try:
-        from tws.index_tracker import compute_prediction, save_prediction
-        from tws.telegram_notifier import send_market_prediction
-        pred = compute_prediction(BASE_DIR)
-        save_prediction(BASE_DIR, pred)
-        send_market_prediction(BASE_DIR)
-    except Exception as e:
-        print(f"[!] Market prediction failed (non-fatal): {e}")
-
-    # Step 1: 數據同步 — downloads fresh OHLCV so outcome resolution has today's prices
+    # Step 1: Download fresh OHLCV
+    print("[resolve] 同步每日數據...")
     engine.sync_daily_data()
 
-    # Step 1b: Resolve previous predictions now that OHLCV files are up to date
-    print("[Step 1b] 驗證過去預測結果...")
+    # Step 1b: Resolve stock signal predictions
+    print("[resolve] 驗證過去預測結果...")
     resolve_outcomes(BASE_DIR)
 
-    # Step 1c: Resolve today's Oracle prediction with fresh TAIEX data
-    print("[Step 1c] 結算今日大盤預測...")
+    # Step 1c: Resolve Oracle + settle bets + result push
+    print("[resolve] 結算今日大盤預測...")
     try:
         from tws.index_tracker import resolve_today_prediction
         from tws.telegram_notifier import send_market_result
         if resolve_today_prediction(BASE_DIR):
             send_market_result(BASE_DIR)
+            _api_call("POST", "/api/sandbox/settle", {})
+            _api_call("POST", "/api/notify/broadcast", {"type": "result"})
+            try:
+                from tws.telegram_notifier import broadcast_to_subscribers
+                n = broadcast_to_subscribers(BASE_DIR, "result")
+                if n:
+                    print(f"[resolve] Telegram DM sent to {n} subscriber(s)")
+            except Exception as e:
+                print(f"[!] Telegram subscriber broadcast failed (non-fatal): {e}")
     except Exception as e:
-        print(f"[!] Market result resolution failed (non-fatal): {e}")
+        print(f"[!] Oracle resolution failed (non-fatal): {e}")
 
-    # Step 2: 執行趨勢篩選 (掃描 data/ohlcv 中的檔案)
-    print("[Step 2] 執行台股趨勢分析...")
+    # Step 2: TW signal scan
+    print("[resolve] 執行台股趨勢分析...")
     run_taiwan_trending(BASE_DIR)
 
-    # Step 2b: Record today's signals as pending predictions
     trending_file = os.path.join(BASE_DIR, "current_trending.csv")
     if os.path.exists(trending_file):
         signals_df = pd.read_csv(trending_file, dtype={"ticker": str})
@@ -66,17 +96,24 @@ def run_tws_pipeline():
                 f"({summary['total']} resolved, {summary.get('pending', 0)} pending)"
             )
 
-    # Step 3: 更新深度金融數據 (ROE, PE, 目標價...)
-    print("[Step 3] 同步 Yahoo Finance 深度數據 (含過期檢查)...")
+    # Step 3: Update fundamentals
+    print("[resolve] 同步 Yahoo Finance 深度數據...")
     engine.update_mapping_with_trending()
 
-    # Step 4a: 全市場總覽 (漲跌停 + 產業排行 + 大盤熱力圖)
-    print("[Step 4a] 發送市場總覽與熱力圖...")
+    # Step 4: Telegram reports
+    print("[resolve] 發送市場總覽與熱力圖...")
     send_market_overview(BASE_DIR)
-
-    # Step 4b: 訊號股個別分析報告
-    print("[Step 4b] 執行 AI 分析並發送訊號股報告...")
+    print("[resolve] 執行 AI 分析並發送訊號股報告...")
     send_stock_report(BASE_DIR)
+
+    print("✅ [resolve] 完成")
+
+
+def run_tws_pipeline():
+    """Legacy: full TW pipeline in one shot (kept for --market TW manual runs)."""
+    print("🚀 TWS 自動化流程啟動")
+    run_predict_step()
+    run_resolve_step()
 
 def run_us_pipeline():
     print(f"🚀 US 自動化流程啟動")
@@ -134,23 +171,27 @@ def _us_eod_ready() -> bool:
 
 def main():
     """
-    Auto scheduling rules (UTC+8 = TST):
-      08:00–14:00 TST Mon–Fri  →  TW only   (market active / just closed)
-      all other weekday times  →  TW + US   (TW EOD settled, US post-close)
-      weekends                 →  nothing   (use --market to override)
+    Cron-oriented steps (preferred):
+      --step predict   08:00 TST Mon–Fri  →  Oracle predict + Telegram + morning push
+      --step resolve   14:05 TST Mon–Fri  →  sync + resolve + settle + push + signals
 
-    Override: --market TW | US | all
+    Legacy manual override:
+      --market TW | US | all
     """
     parser = argparse.ArgumentParser(
         description="Stock analysis pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python master_run.py              # auto schedule (see rules above)\n"
-            "  python master_run.py --market TW  # force TW pipeline only\n"
-            "  python master_run.py --market US  # force US pipeline only\n"
-            "  python master_run.py --market all # force both pipelines\n"
+            "  python master_run.py --step predict   # 08:00 cron\n"
+            "  python master_run.py --step resolve   # 14:05 cron\n"
+            "  python master_run.py --market US      # force US pipeline\n"
+            "  python master_run.py --market all     # force both pipelines\n"
         ),
+    )
+    parser.add_argument(
+        "--step", choices=["predict", "resolve"],
+        help="Run a specific pipeline step (cron mode)",
     )
     parser.add_argument(
         "--market", choices=["TW", "US", "all"], default="auto",
@@ -158,27 +199,36 @@ def main():
     )
     args = parser.parse_args()
 
+    start_time = datetime.now()
     now_tst = datetime.now(ZoneInfo("Asia/Taipei"))
     now_et  = datetime.now(ZoneInfo("America/New_York"))
-    is_weekday = now_tst.weekday() < 5
+    print(f"[Time] TST {now_tst.strftime('%H:%M')} | ET {now_et.strftime('%H:%M')}")
 
+    # --step takes priority over --market
+    if args.step == "predict":
+        run_predict_step()
+        print(f"✅ 流程完成。耗時: {datetime.now() - start_time}")
+        return
+    if args.step == "resolve":
+        run_resolve_step()
+        print(f"✅ 流程完成。耗時: {datetime.now() - start_time}")
+        return
+
+    # Legacy --market logic
+    is_weekday = now_tst.weekday() < 5
     if args.market == "auto":
         if not is_weekday:
             print(f"⏳ Weekend ({now_tst.strftime('%A %H:%M TST')}) — no auto run.")
-            print("   Use --market TW|US|all to force.")
+            print("   Use --market TW|US|all or --step predict|resolve to force.")
             return
         if _tw_session():
-            # 08:00–14:00 TST: TW trading window — TW pipeline only
             run_tw, run_us = True, False
         else:
-            # Outside TW window (evenings / early morning): US pipeline only
             run_tw, run_us = False, True
     else:
         run_tw = args.market in ("TW", "all")
         run_us = args.market in ("US", "all")
 
-    start_time = datetime.now()
-    print(f"[Time] TST {now_tst.strftime('%H:%M')} | ET {now_et.strftime('%H:%M')}")
     if run_tw:
         print("🇹🇼 Running TW pipeline")
         run_tws_pipeline()

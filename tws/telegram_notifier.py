@@ -1170,3 +1170,104 @@ def send_market_result(base_dir: str) -> None:
         lines.append(streak_line)
 
     tool.send_markdown("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Individual subscriber DMs (Telegram subscribers, not the channel)
+# ---------------------------------------------------------------------------
+
+def send_to_chat(chat_id: str, text: str) -> bool:
+    """
+    Send a Markdown message to a single Telegram chat ID.
+    Used for individual subscriber DMs (morning prediction + result).
+    Returns True on success.
+    """
+    import requests as _req
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token or not chat_id:
+        return False
+    try:
+        r = _req.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+            timeout=8,
+        )
+        return r.ok
+    except Exception:
+        return False
+
+
+def broadcast_to_subscribers(base_dir: str, msg_type: str) -> int:
+    """
+    Broadcast Oracle messages to all active Telegram subscribers.
+    msg_type: "morning" | "result"
+    Returns count of DMs sent.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = str(_Path(base_dir))
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+
+    from api.db import Subscriber, SessionLocal
+    from tws.index_tracker import _load_history, oracle_stats
+
+    from datetime import datetime as _dt
+    import json as _json
+
+    today   = _dt.now().strftime("%Y-%m-%d")
+    history = _load_history(base_dir)
+    stats   = oracle_stats(base_dir)
+
+    if history.empty:
+        return 0
+
+    if msg_type == "morning":
+        rows = history[history["date"] == today]
+        if rows.empty:
+            return 0
+        row       = rows.iloc[-1]
+        direction = row.get("direction", "?")
+        conf      = float(row.get("confidence_pct") or 0)
+        dir_emoji = "🟢" if direction == "Bull" else "🔴"
+        dir_label = "多方 Bull" if direction == "Bull" else "空方 Bear"
+        text = (
+            f"🔮 *Oracle 今日預測 — {today}*\n\n"
+            f"{dir_emoji} *{dir_label}*  信心 {conf:.0f}%\n\n"
+            f"下注截止 09:00 TST\n"
+            f"累計勝率 {stats.get('win_rate_pct', 0):.0f}%  積分 {stats.get('cumulative_score', 0):+,.0f}"
+        )
+
+    elif msg_type == "result":
+        rows = history[(history["date"] == today) & (history["status"] == "resolved")]
+        if rows.empty:
+            return 0
+        row        = rows.iloc[-1]
+        direction  = row.get("direction", "?")
+        is_correct = str(row.get("is_correct", "")).lower() in ("true", "1")
+        change_pts = float(row.get("taiex_change_pts") or 0)
+        score_pts  = float(row.get("score_pts") or 0)
+        outcome    = "✅ 命中" if is_correct else "❌ 未命中"
+        streak     = stats.get("streak", 0)
+        streak_txt = f"  🔥 {streak}連勝" if is_correct and streak >= 2 else ""
+        text = (
+            f"📊 *Oracle 結算 — {today}*\n\n"
+            f"{outcome}\n"
+            f"大盤 {change_pts:+.0f}pts  積分 {score_pts:+.0f}{streak_txt}\n\n"
+            f"累計勝率 {stats.get('win_rate_pct', 0):.0f}%  "
+            f"積分 {stats.get('cumulative_score', 0):+,.0f}"
+        )
+    else:
+        return 0
+
+    db   = SessionLocal()
+    sent = 0
+    try:
+        subs = db.query(Subscriber).filter(Subscriber.active == True).all()
+        for sub in subs:
+            if send_to_chat(sub.telegram_id, text):
+                sent += 1
+    finally:
+        db.close()
+
+    return sent
