@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey,
+    Boolean, Column, DateTime, Float, ForeignKey,
     Integer, String, create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -60,6 +60,25 @@ class Bet(Base):
     payout     = Column(Integer, nullable=True)   # positive = won, negative = lost
     status     = Column(String, default="pending")  # "pending" | "settled"
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class StockBet(Base):
+    """Per-user directional bets on Finviz top-mover tickers."""
+    __tablename__ = "stock_bets"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    device_id    = Column(String, ForeignKey("users.device_id"), nullable=False, index=True)
+    ticker       = Column(String, nullable=False, index=True)
+    bet_date     = Column(String, nullable=False)    # YYYY-MM-DD (when placed)
+    direction    = Column(String, nullable=False)    # "Bull" | "Bear"
+    bet_amount   = Column(Integer, nullable=False)
+    entry_price  = Column(Float, nullable=True)      # price at bet time
+    exit_price   = Column(Float, nullable=True)      # settlement price (T+1 close)
+    is_correct   = Column(Boolean, nullable=True)
+    payout       = Column(Integer, nullable=True)    # +amount or -(amount//2)
+    status       = Column(String, default="pending") # "pending" | "settled"
+    category     = Column(String, nullable=True)     # "top_gainer" | "oversold" | "high_volume"
+    created_at   = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 def create_tables():

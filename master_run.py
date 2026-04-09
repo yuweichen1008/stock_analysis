@@ -144,8 +144,12 @@ def run_us_pipeline():
     except Exception as e:
         print(f"[!] US company mapping failed (non-fatal): {e}")
 
-    # Step 4: Send US Telegram report (signals or watch-list)
-    print("[Step 4] Sending US Telegram report...")
+    # Step 4: Settle pending stock bets now that US market has closed
+    print("[Step 4] Settling stock bets...")
+    _api_call("POST", "/api/stocks/settle", {})
+
+    # Step 5: Send US Telegram report (signals or watch-list)
+    print("[Step 5] Sending US Telegram report...")
     try:
         from us.us_notifier import send_us_report
         send_us_report(BASE_DIR)

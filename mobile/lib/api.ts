@@ -125,4 +125,74 @@ export const Signals = {
   us: () => api.get<SignalsData>('/api/signals/us').then(r => r.data),
 };
 
+// ── Stock movers + bets ────────────────────────────────────────────────────
+
+export interface MoverRow {
+  ticker:   string;
+  name:     string;
+  sector:   string;
+  price:    number | null;
+  change:   number;
+  volume:   number;
+  rsi:      number | null;
+  pe:       number | null;
+  category: string;
+  score:    number;
+}
+
+export interface MoversData {
+  top_gainers:  MoverRow[];
+  oversold:     MoverRow[];
+  high_volume:  MoverRow[];
+  all_movers:   MoverRow[];
+  cached_at:    string | null;
+}
+
+export interface BacktestResult {
+  ticker:       string;
+  total_trades: number;
+  wins:         number;
+  losses:       number;
+  win_rate:     number;
+  avg_return:   number;
+  last_signal:  string | null;
+}
+
+export interface StockBetRow {
+  id:          number;
+  ticker:      string;
+  date:        string;
+  direction:   'Bull' | 'Bear';
+  amount:      number;
+  entry_price: number | null;
+  exit_price:  number | null;
+  is_correct:  boolean | null;
+  payout:      number | null;
+  status:      'pending' | 'settled';
+  category:    string | null;
+}
+
+export interface StockStats {
+  total_bets:   number;
+  wins:         number;
+  losses:       number;
+  win_rate_pct: number;
+  total_payout: number;
+  by_ticker:    { ticker: string; trades: number; wins: number; win_rate: number; payout: number }[];
+}
+
+export const Stocks = {
+  movers:   () => api.get<MoversData>('/api/stocks/movers').then(r => r.data),
+  backtest: (tickers: string[]) =>
+    api.get<{ results: BacktestResult[]; tickers_tested: number }>(
+      `/api/stocks/backtest?tickers=${tickers.join(',')}`,
+    ).then(r => r.data),
+  bet: (device_id: string, ticker: string, direction: 'Bull' | 'Bear', bet_amount: number, category?: string) =>
+    api.post('/api/stocks/bet', { device_id, ticker, direction, bet_amount, category }).then(r => r.data),
+  history: (device_id: string, limit = 30) =>
+    api.get<StockBetRow[]>(`/api/stocks/history/${device_id}?limit=${limit}`).then(r => r.data),
+  stats: (device_id: string) =>
+    api.get<StockStats>(`/api/stocks/stats/${device_id}`).then(r => r.data),
+};
+
 export default api;
