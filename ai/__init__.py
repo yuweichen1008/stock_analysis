@@ -1,3 +1,1 @@
-from ai.analyst import StockAnalyst
-
-__all__ = ["StockAnalyst"]
+# ai package — Claude-powered analyst and multi-agent investment framework

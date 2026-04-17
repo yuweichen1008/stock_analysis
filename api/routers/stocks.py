@@ -57,11 +57,15 @@ def _fetch_movers() -> dict:
     try:
         from us.finviz_data import get_screener_results
 
-        # Top gainers — up 3%+ today, liquid
-        df_gain = get_screener_results(
-            {"Performance": "Today +5%", "Price": "Over $5", "Average Volume": "Over 500K"},
-            order_by="Change",
-        )
+        # Top gainers — fallback through time windows so weekends/after-hours still return data
+        df_gain = pd.DataFrame()
+        for perf_filter in ("Today +5%", "Week +5%", "Month +10%"):
+            df_gain = get_screener_results(
+                {"Performance": perf_filter, "Price": "Over $5", "Average Volume": "Over 500K"},
+                order_by="Change",
+            )
+            if not df_gain.empty:
+                break
         if not df_gain.empty:
             result["top_gainers"] = _normalise_fv(df_gain.head(10), "top_gainer")
 
@@ -311,11 +315,12 @@ def place_stock_bet(body: StockBetBody, db: Session = Depends(get_db)):
         max_allowed = max(STOCK_MIN_BET, user.coins - COIN_FLOOR)
         raise HTTPException(400, f"Cannot go below {COIN_FLOOR} coins. Max bet: {max_allowed}")
 
-    # Fetch current price
+    # Fetch current price (official close from yfinance history)
     entry_price = None
     try:
-        info = yf.Ticker(ticker).fast_info
-        entry_price = float(getattr(info, "last_price", None) or 0) or None
+        hist = yf.Ticker(ticker).history(period="1d")
+        if not hist.empty:
+            entry_price = float(hist["Close"].iloc[-1])
     except Exception:
         pass
 
@@ -355,31 +360,44 @@ def settle_stock_bets(db: Session = Depends(get_db)):
     if not pending:
         return {"settled": 0}
 
-    # Group by ticker to batch yfinance calls
+    # Group by ticker to batch yfinance calls — fetch 5d so we have T and T+1 rows
     tickers_needed = list({b.ticker for b in pending})
-    prices: dict[str, float] = {}
+    histories: dict[str, pd.DataFrame] = {}
     for ticker in tickers_needed:
         try:
-            hist = yf.Ticker(ticker).history(period="2d")
+            hist = yf.Ticker(ticker).history(period="5d")
             if not hist.empty:
-                prices[ticker] = float(hist["Close"].iloc[-1])
+                hist.index = pd.to_datetime(hist.index).normalize()
+                histories[ticker] = hist
         except Exception:
             pass
 
     settled_count = 0
     for bet in pending:
-        close = prices.get(bet.ticker)
-        if close is None:
+        hist = histories.get(bet.ticker)
+        if hist is None or hist.empty:
             continue   # price unavailable — try again next cycle
 
         user = db.get(User, bet.device_id)
         if not user:
             continue
 
-        entry = bet.entry_price or close   # fallback: treat as break-even
-        moved_up = close > entry
+        # Find the row for the bet date, then use the NEXT row as exit (T+1 model)
+        bet_dt = pd.Timestamp(bet.bet_date).normalize()
+        if bet_dt not in hist.index:
+            # bet_date not in the 5-day window — data not yet available
+            continue
+        pos = hist.index.get_loc(bet_dt)
+        if pos >= len(hist) - 1:
+            # No next-day row yet — market hasn't closed T+1
+            continue
 
-        bet.exit_price = close
+        entry = bet.entry_price if bet.entry_price else float(hist.iloc[pos]["Close"])
+        exit_ = float(hist.iloc[pos + 1]["Close"])
+
+        moved_up = exit_ > entry
+
+        bet.exit_price = exit_
         bet.is_correct = (bet.direction == "Bull") == moved_up
         if bet.is_correct:
             bet.payout   = bet.bet_amount
@@ -392,7 +410,7 @@ def settle_stock_bets(db: Session = Depends(get_db)):
         settled_count += 1
 
     db.commit()
-    return {"settled": settled_count, "prices_fetched": len(prices)}
+    return {"settled": settled_count, "tickers_fetched": len(histories)}
 
 
 @router.get("/history/{device_id}")

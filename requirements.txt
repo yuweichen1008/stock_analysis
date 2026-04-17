@@ -33,3 +33,5 @@ playwright>=1.40.0
 playwright-stealth
 ddddocr
 finvizfinance
+networkx>=3.2
+pyvis>=0.3.2

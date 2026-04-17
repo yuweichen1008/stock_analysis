@@ -7,7 +7,7 @@ Docs: http://localhost:8000/docs
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import oracle, sandbox, signals, notify, subscribe, stocks
+from api.routers import oracle, sandbox, signals, notify, subscribe, stocks, agents, graph
 
 app = FastAPI(
     title="Oracle API",
@@ -29,6 +29,8 @@ app.include_router(signals.router)
 app.include_router(notify.router)
 app.include_router(subscribe.router)
 app.include_router(stocks.router)
+app.include_router(agents.router)
+app.include_router(graph.router)
 
 
 @app.get("/")
@@ -52,6 +54,11 @@ def root():
             "/api/notify/broadcast",
             "/api/subscribe",
             "/subscribe",
+            "/api/agents/analyze",
+            "/api/agents/batch",
+            "/api/graph/signals",
+            "/api/graph/sectors",
+            "/api/graph/agents",
         ],
     }
 
