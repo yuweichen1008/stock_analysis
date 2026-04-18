@@ -6,6 +6,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import json
+from typing import Optional
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -28,7 +29,7 @@ _STRATEGIES_FILE  = BASE_DIR / "data" / "account_strategies.json"
 _STRATEGY_OPTIONS = ["Mean-Reversion", "High-Value Moat", "US Momentum", "Hold Only"]
 
 
-def _load_baseline() -> dict | None:
+def _load_baseline() -> Optional[dict]:
     if _BASELINE_FILE.exists():
         try:
             return json.loads(_BASELINE_FILE.read_text())

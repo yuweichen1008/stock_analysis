@@ -324,7 +324,7 @@ with tab_board:
                     title="RSI (14)", range=[0, 118],
                     gridcolor="#2a2a2a",
                     tickfont=dict(color="#aaa"),
-                    titlefont=dict(color="#aaa"),
+                    title_font=dict(color="#aaa"),
                 ),
                 yaxis=dict(tickfont=dict(color="#cccccc", size=10), automargin=True),
                 template="plotly_dark",

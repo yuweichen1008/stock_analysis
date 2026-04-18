@@ -226,10 +226,10 @@ def _combo_chart(df: pd.DataFrame, title: str = "") -> go.Figure:
         margin=dict(t=40 if title else 10, b=20, l=10, r=60),
         xaxis=dict(gridcolor="#2a2a2a"),
         yaxis=dict(title="每日積分", gridcolor="#2a2a2a",
-                   titlefont=dict(color="#888"), tickfont=dict(color="#888")),
+                   title_font=dict(color="#888"), tickfont=dict(color="#888")),
         yaxis2=dict(title="累計積分", overlaying="y", side="right",
                     gridcolor="#1a1a1a",
-                    titlefont=dict(color="#ffa726"), tickfont=dict(color="#ffa726")),
+                    title_font=dict(color="#ffa726"), tickfont=dict(color="#ffa726")),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         hovermode="x unified",
     )

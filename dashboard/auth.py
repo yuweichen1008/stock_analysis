@@ -77,7 +77,20 @@ def require_login(authenticator) -> tuple:
     Render the login form if the user is not authenticated.
     Returns (name, True) on success; calls st.stop() otherwise.
     """
-    name, auth_status, username = authenticator.login("Login", "main")
+    try:
+        # streamlit-authenticator >= 0.3.3 uses keyword-only form
+        login_result = authenticator.login(location="main")
+    except TypeError:
+        # older API: positional (form_name, location)
+        login_result = authenticator.login("Login", "main")
+
+    if isinstance(login_result, tuple):
+        name, auth_status, username = login_result
+    else:
+        # newer versions store result in session state
+        name        = st.session_state.get("name")
+        auth_status = st.session_state.get("authentication_status")
+        username    = st.session_state.get("username")
 
     if auth_status is False:
         st.error("Incorrect username or password.")
