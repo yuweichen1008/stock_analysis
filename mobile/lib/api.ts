@@ -1,10 +1,33 @@
 import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 
 export const API_BASE: string =
-  (Constants.expoConfig?.extra?.apiBase as string | undefined) ?? 'http://localhost:8000';
+  (Constants.expoConfig?.extra?.apiBase as string | undefined) ?? 'http://localhost:8080';
 
-const api = axios.create({ baseURL: API_BASE, timeout: 10000 });
+const api = axios.create({ baseURL: API_BASE, timeout: 15000 });
+
+// ── JWT request interceptor ────────────────────────────────────────────────
+api.interceptors.request.use(async (config) => {
+  const token = await AsyncStorage.getItem('oracle_auth_token');
+  if (token) {
+    config.headers = config.headers ?? {};
+    config.headers['Authorization'] = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// ── 401 → logout ──────────────────────────────────────────────────────────
+api.interceptors.response.use(
+  r => r,
+  async (error) => {
+    if (error?.response?.status === 401) {
+      await AsyncStorage.multiRemove(['oracle_auth_token', 'oracle_user']);
+      // The auth store listener will pick this up on next render
+    }
+    return Promise.reject(error);
+  },
+);
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -39,8 +62,9 @@ export interface OracleStats {
 }
 
 export interface UserData {
-  device_id: string;
-  nickname: string | null;
+  id: number;
+  device_id: string | null;
+  display_name: string;
   coins: number;
   total_bets: number;
   wins: number;
@@ -67,8 +91,9 @@ export interface BetRow {
 
 export interface LeaderboardRow {
   rank: number;
-  device_id: string;
-  nickname: string;
+  id: number;
+  device_id: string | null;
+  display_name: string;
   coins: number;
   total_bets: number;
   wins: number;
@@ -78,6 +103,7 @@ export interface LeaderboardRow {
 export interface SignalRow {
   ticker: string;
   name?: string;
+  market?: string;
   score?: number | null;
   price?: number | null;
   RSI?: number | null;
@@ -93,7 +119,42 @@ export interface SignalsData {
   total: number;
 }
 
-// ── API calls ──────────────────────────────────────────────────────────────
+export interface WatchlistItem {
+  id:       number;
+  ticker:   string;
+  market:   string;
+  notes:    string | null;
+  added_at: string | null;
+}
+
+export interface PostReactions { bull: number; bear: number; fire: number; }
+
+export interface PostItem {
+  id:              number;
+  user:            { id: number | null; display_name: string; avatar_url: string | null };
+  ticker:          string | null;
+  market:          string | null;
+  content:         string;
+  signal_type:     string | null;
+  created_at:      string | null;
+  reactions:       PostReactions;
+  viewer_reaction: string | null;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type:   string;
+  user: {
+    id:            number;
+    display_name:  string;
+    email:         string | null;
+    coins:         number;
+    avatar_url:    string | null;
+    auth_provider: string | null;
+  };
+}
+
+// ── API namespaces ─────────────────────────────────────────────────────────
 
 export const Oracle = {
   today:   () => api.get<OracleRow>('/api/oracle/today').then(r => r.data),
@@ -105,7 +166,10 @@ export const Oracle = {
 export const Sandbox = {
   register: (device_id: string, nickname?: string) =>
     api.post('/api/sandbox/register', { device_id, nickname }).then(r => r.data),
-  me: (device_id: string) =>
+  // New token-based me endpoint (no path param)
+  me: () => api.get<UserData>('/api/sandbox/me').then(r => r.data),
+  // Legacy path-param variant (kept for backwards compat)
+  meByDevice: (device_id: string) =>
     api.get<UserData>(`/api/sandbox/me/${device_id}`).then(r => r.data),
   bet: (device_id: string, direction: 'Bull' | 'Bear', bet_amount: number) =>
     api.post('/api/sandbox/bet', { device_id, direction, bet_amount }).then(r => r.data),
@@ -121,8 +185,37 @@ export const Notify = {
 };
 
 export const Signals = {
-  tw: () => api.get<SignalsData>('/api/signals/tw').then(r => r.data),
-  us: () => api.get<SignalsData>('/api/signals/us').then(r => r.data),
+  tw:     () => api.get<SignalsData>('/api/signals/tw').then(r => r.data),
+  us:     () => api.get<SignalsData>('/api/signals/us').then(r => r.data),
+  search: (q: string, market = 'all', limit = 20) =>
+    api.get<SignalRow[]>(`/api/signals/search?q=${encodeURIComponent(q)}&market=${market}&limit=${limit}`).then(r => r.data),
+};
+
+export const Auth = {
+  apple:  (identity_token: string, full_name?: string) =>
+    api.post<AuthResponse>('/api/auth/apple', { identity_token, full_name }).then(r => r.data),
+  google: (id_token: string) =>
+    api.post<AuthResponse>('/api/auth/google', { id_token }).then(r => r.data),
+  device: (device_id: string, nickname?: string) =>
+    api.post<AuthResponse>('/api/auth/device', { device_id, nickname }).then(r => r.data),
+};
+
+export const Watchlist = {
+  list:    () => api.get<WatchlistItem[]>('/api/watchlist/').then(r => r.data),
+  alerts:  () => api.get<SignalRow[]>('/api/watchlist/alerts').then(r => r.data),
+  add:     (ticker: string, market: string, notes?: string) =>
+    api.post<WatchlistItem>('/api/watchlist/', { ticker, market, notes }).then(r => r.data),
+  remove:  (ticker: string, market = 'US') =>
+    api.delete(`/api/watchlist/${encodeURIComponent(ticker)}?market=${market}`).then(r => r.data),
+};
+
+export const Feed = {
+  list:   (market = 'all', limit = 20, offset = 0) =>
+    api.get<PostItem[]>(`/api/feed/?market=${market}&limit=${limit}&offset=${offset}`).then(r => r.data),
+  create: (content: string, ticker?: string, market?: string, signal_type?: string) =>
+    api.post<PostItem>('/api/feed/', { content, ticker, market, signal_type }).then(r => r.data),
+  react:  (post_id: number, emoji_type: 'bull' | 'bear' | 'fire') =>
+    api.post(`/api/feed/${post_id}/react`, { emoji_type }).then(r => r.data),
 };
 
 // ── Stock movers + bets ────────────────────────────────────────────────────

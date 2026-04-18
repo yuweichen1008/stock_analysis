@@ -1,5 +1,6 @@
 import { Tabs } from 'expo-router';
 import { Colors } from '../../constants/colors';
+import { Text } from 'react-native';
 
 export default function TabLayout() {
   return (
@@ -21,33 +22,32 @@ export default function TabLayout() {
     >
       <Tabs.Screen
         name="index"
-        options={{ title: '預測', tabBarIcon: ({ color }) => <TabIcon label="🔮" color={color} /> }}
-      />
-      <Tabs.Screen
-        name="bet"
-        options={{ title: '下注', tabBarIcon: ({ color }) => <TabIcon label="🎯" color={color} /> }}
-      />
-      <Tabs.Screen
-        name="history"
-        options={{ title: '紀錄', tabBarIcon: ({ color }) => <TabIcon label="📅" color={color} /> }}
-      />
-      <Tabs.Screen
-        name="leaderboard"
-        options={{ title: '排行', tabBarIcon: ({ color }) => <TabIcon label="🏆" color={color} /> }}
-      />
-      <Tabs.Screen
-        name="market"
         options={{ title: '訊號', tabBarIcon: ({ color }) => <TabIcon label="📊" color={color} /> }}
       />
       <Tabs.Screen
-        name="subscribe"
-        options={{ title: '通知', tabBarIcon: ({ color }) => <TabIcon label="🔔" color={color} /> }}
+        name="oracle"
+        options={{ title: 'Oracle', tabBarIcon: ({ color }) => <TabIcon label="🔮" color={color} /> }}
+      />
+      <Tabs.Screen
+        name="community"
+        options={{ title: '社群', tabBarIcon: ({ color }) => <TabIcon label="👥" color={color} /> }}
+      />
+      <Tabs.Screen
+        name="watchlist"
+        options={{ title: '自選股', tabBarIcon: ({ color }) => <TabIcon label="⭐" color={color} /> }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{ title: '我的', tabBarIcon: ({ color }) => <TabIcon label="👤" color={color} /> }}
       />
     </Tabs>
   );
 }
 
 function TabIcon({ label, color }: { label: string; color: string }) {
-  const { Text } = require('react-native');
-  return <Text style={{ fontSize: 20, opacity: color === Colors.tabActive ? 1 : 0.5 }}>{label}</Text>;
+  return (
+    <Text style={{ fontSize: 20, opacity: color === Colors.tabActive ? 1 : 0.5 }}>
+      {label}
+    </Text>
+  );
 }

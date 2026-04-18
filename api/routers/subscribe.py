@@ -16,6 +16,7 @@ from pathlib import Path
 import requests as _requests
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import HTMLResponse
+from typing import Optional
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -49,7 +50,7 @@ def _tg_send(chat_id: str, text: str) -> bool:
 
 class SubscribeBody(BaseModel):
     telegram_id: str
-    label:       str | None = None
+    label:       Optional[str] = None
 
 
 # ── HTML subscribe page ───────────────────────────────────────────────────────

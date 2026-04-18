@@ -19,6 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from api.auth import get_current_user, require_internal
 from api.db import Bet, User, get_db
 from tws.index_tracker import _load_history
 
@@ -60,12 +61,14 @@ class BetBody(BaseModel):
 @router.post("/register")
 def register(body: RegisterBody, db: Session = Depends(get_db)):
     """Register a new device. Returns existing user if already registered."""
-    user = db.get(User, body.device_id)
+    user = db.query(User).filter(User.device_id == body.device_id).first()
     if user:
         return {"device_id": user.device_id, "coins": user.coins, "created": False}
 
     user = User(
         device_id=body.device_id,
+        auth_provider="device",
+        auth_id=body.device_id,
         coins=STARTING_COINS,
         nickname=body.nickname,
     )
@@ -74,26 +77,20 @@ def register(body: RegisterBody, db: Session = Depends(get_db)):
     return {"device_id": user.device_id, "coins": STARTING_COINS, "created": True}
 
 
-@router.get("/me/{device_id}")
-def get_me(device_id: str, db: Session = Depends(get_db)):
-    """User balance, today's bet status, and aggregate stats."""
-    user = db.get(User, device_id)
-    if not user:
-        raise HTTPException(404, "Device not registered. Call /register first.")
-
+def _build_me_response(user: User, db: Session) -> dict:
     today = _today_tst()
     today_bet = (
         db.query(Bet)
-        .filter(Bet.device_id == device_id, Bet.date == today)
+        .filter(Bet.user_id == user.id, Bet.date == today)
         .first()
     )
-    all_bets = db.query(Bet).filter(Bet.device_id == device_id).all()
+    all_bets = db.query(Bet).filter(Bet.user_id == user.id).all()
     settled  = [b for b in all_bets if b.status == "settled"]
     wins     = sum(1 for b in settled if b.is_correct)
-
     return {
-        "device_id":   device_id,
-        "nickname":    user.nickname,
+        "id":          user.id,
+        "device_id":   user.device_id,
+        "display_name": user.display_name or user.nickname or f"Player{user.id}",
         "coins":       user.coins,
         "total_bets":  len(all_bets),
         "wins":        wins,
@@ -108,13 +105,28 @@ def get_me(device_id: str, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/me")
+def get_me_token(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """User profile by JWT token (new app path)."""
+    return _build_me_response(current_user, db)
+
+
+@router.get("/me/{device_id}")
+def get_me(device_id: str, db: Session = Depends(get_db)):
+    """Legacy: user profile by device_id."""
+    user = db.query(User).filter(User.device_id == device_id).first()
+    if not user:
+        raise HTTPException(404, "Device not registered. Call /register first.")
+    return _build_me_response(user, db)
+
+
 @router.post("/bet")
 def place_bet(body: BetBody, db: Session = Depends(get_db)):
     """Place today's Bull/Bear bet. One bet per day, locked after 09:00 TST."""
     if body.direction not in ("Bull", "Bear"):
         raise HTTPException(400, "direction must be 'Bull' or 'Bear'")
 
-    user = db.get(User, body.device_id)
+    user = db.query(User).filter(User.device_id == body.device_id).first()
     if not user:
         raise HTTPException(404, "Device not registered.")
 
@@ -123,7 +135,7 @@ def place_bet(body: BetBody, db: Session = Depends(get_db)):
     # Check for duplicate bet
     existing = (
         db.query(Bet)
-        .filter(Bet.device_id == body.device_id, Bet.date == today)
+        .filter(Bet.user_id == user.id, Bet.date == today)
         .first()
     )
     if existing:
@@ -141,6 +153,7 @@ def place_bet(body: BetBody, db: Session = Depends(get_db)):
         raise HTTPException(400, f"Cannot go below {COIN_FLOOR} coins. Max bet: {max_allowed}")
 
     bet = Bet(
+        user_id=user.id,
         device_id=body.device_id,
         date=today,
         direction=body.direction,
@@ -162,7 +175,7 @@ def place_bet(body: BetBody, db: Session = Depends(get_db)):
 
 
 @router.post("/settle")
-def settle_bets(db: Session = Depends(get_db)):
+def settle_bets(db: Session = Depends(get_db), _: None = Depends(require_internal)):
     """
     Internal endpoint: called by pipeline after Oracle resolution.
     Settles all pending bets for today using the Oracle outcome.
@@ -196,7 +209,9 @@ def settle_bets(db: Session = Depends(get_db)):
 
     settled_count = 0
     for bet in pending:
-        user = db.get(User, bet.device_id)
+        user = db.get(User, bet.user_id) if bet.user_id else None
+        if not user and bet.device_id:
+            user = db.query(User).filter(User.device_id == bet.device_id).first()
         if not user:
             continue
 
@@ -224,13 +239,13 @@ def settle_bets(db: Session = Depends(get_db)):
 @router.get("/history/{device_id}")
 def get_bet_history(device_id: str, limit: int = 30, db: Session = Depends(get_db)):
     """User's personal bet history, newest first."""
-    user = db.get(User, device_id)
+    user = db.query(User).filter(User.device_id == device_id).first()
     if not user:
         raise HTTPException(404, "Device not registered.")
 
     bets = (
         db.query(Bet)
-        .filter(Bet.device_id == device_id)
+        .filter(Bet.user_id == user.id)
         .order_by(Bet.date.desc())
         .limit(limit)
         .all()
@@ -260,16 +275,18 @@ def get_leaderboard(limit: int = 20, db: Session = Depends(get_db)):
     result = []
     for rank, u in enumerate(users, start=1):
         settled = db.query(Bet).filter(
-            Bet.device_id == u.device_id, Bet.status == "settled"
+            Bet.user_id == u.id, Bet.status == "settled"
         ).all()
         wins = sum(1 for b in settled if b.is_correct)
+        display = u.display_name or u.nickname or (u.device_id[:8] if u.device_id else f"Player{u.id}")
         result.append({
-            "rank":       rank,
-            "device_id":  u.device_id,
-            "nickname":   u.nickname or u.device_id[:8],
-            "coins":      u.coins,
-            "total_bets": len(settled),
-            "wins":       wins,
-            "win_rate":   round(wins / len(settled) * 100, 1) if settled else 0.0,
+            "rank":         rank,
+            "id":           u.id,
+            "device_id":    u.device_id,
+            "display_name": display,
+            "coins":        u.coins,
+            "total_bets":   len(settled),
+            "wins":         wins,
+            "win_rate":     round(wins / len(settled) * 100, 1) if settled else 0.0,
         })
     return result

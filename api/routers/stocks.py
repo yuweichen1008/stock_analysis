@@ -27,6 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from api.auth import require_internal
 from api.db import StockBet, User, get_db
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
@@ -288,7 +289,7 @@ def place_stock_bet(body: StockBetBody, db: Session = Depends(get_db)):
     if not ticker:
         raise HTTPException(400, "ticker is required")
 
-    user = db.get(User, body.device_id)
+    user = db.query(User).filter(User.device_id == body.device_id).first()
     if not user:
         raise HTTPException(404, "Device not registered. Call /sandbox/register first.")
 
@@ -297,7 +298,7 @@ def place_stock_bet(body: StockBetBody, db: Session = Depends(get_db)):
     # Max N bets per day
     today_bets = (
         db.query(StockBet)
-        .filter(StockBet.device_id == body.device_id, StockBet.bet_date == today)
+        .filter(StockBet.user_id == user.id, StockBet.bet_date == today)
         .all()
     )
     if len(today_bets) >= MAX_DAILY_BETS:
@@ -325,6 +326,7 @@ def place_stock_bet(body: StockBetBody, db: Session = Depends(get_db)):
         pass
 
     bet = StockBet(
+        user_id=user.id,
         device_id=body.device_id,
         ticker=ticker,
         bet_date=today,
@@ -351,7 +353,7 @@ def place_stock_bet(body: StockBetBody, db: Session = Depends(get_db)):
 
 
 @router.post("/settle")
-def settle_stock_bets(db: Session = Depends(get_db)):
+def settle_stock_bets(db: Session = Depends(get_db), _: None = Depends(require_internal)):
     """
     Internal endpoint — settle all pending stock bets using latest close prices.
     Called by pipeline after US market close (~18:30 TST).
@@ -378,7 +380,9 @@ def settle_stock_bets(db: Session = Depends(get_db)):
         if hist is None or hist.empty:
             continue   # price unavailable — try again next cycle
 
-        user = db.get(User, bet.device_id)
+        user = db.get(User, bet.user_id) if bet.user_id else None
+        if not user and bet.device_id:
+            user = db.query(User).filter(User.device_id == bet.device_id).first()
         if not user:
             continue
 
@@ -416,13 +420,13 @@ def settle_stock_bets(db: Session = Depends(get_db)):
 @router.get("/history/{device_id}")
 def get_stock_history(device_id: str, limit: int = 30, db: Session = Depends(get_db)):
     """User's personal stock bet history, newest first."""
-    user = db.get(User, device_id)
+    user = db.query(User).filter(User.device_id == device_id).first()
     if not user:
         raise HTTPException(404, "Device not registered.")
 
     bets = (
         db.query(StockBet)
-        .filter(StockBet.device_id == device_id)
+        .filter(StockBet.user_id == user.id)
         .order_by(StockBet.bet_date.desc(), StockBet.created_at.desc())
         .limit(limit)
         .all()
@@ -448,13 +452,13 @@ def get_stock_history(device_id: str, limit: int = 30, db: Session = Depends(get
 @router.get("/stats/{device_id}")
 def get_stock_stats(device_id: str, db: Session = Depends(get_db)):
     """Per-user stock bet win rate and payout stats."""
-    user = db.get(User, device_id)
+    user = db.query(User).filter(User.device_id == device_id).first()
     if not user:
         raise HTTPException(404, "Device not registered.")
 
     settled = (
         db.query(StockBet)
-        .filter(StockBet.device_id == device_id, StockBet.status == "settled")
+        .filter(StockBet.user_id == user.id, StockBet.status == "settled")
         .all()
     )
     wins   = sum(1 for b in settled if b.is_correct)

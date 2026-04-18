@@ -1,0 +1,74 @@
+steps:
+  # ── 1. Build slim API image ────────────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-api
+    args:
+      - build
+      - -f
+      - Dockerfile.api
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-api:${SHORT_SHA}'
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-api:latest'
+      - .
+
+  # ── 2. Push image ──────────────────────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-api
+    waitFor: [build-api]
+    args:
+      - push
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-api'
+
+  # ── 3. Deploy Alembic migration as a Cloud Run Job ─────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-migration-job
+    waitFor: [push-api]
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - oracle-migrate
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-api:${SHORT_SHA}
+      - --region=${_REGION}
+      - --set-secrets=DATABASE_URL=DATABASE_URL:latest
+      - --command=alembic
+      - --args=upgrade,head
+      - --max-retries=1
+
+  # ── 4. Run the migration job ───────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: run-migration
+    waitFor: [deploy-migration-job]
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - execute
+      - oracle-migrate
+      - --region=${_REGION}
+      - --wait
+
+  # ── 5. Deploy API service ──────────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-api
+    waitFor: [run-migration]
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - replace
+      - cloud-run-service.yaml
+      - --region=${_REGION}
+
+substitutions:
+  _REGION: us-central1
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-api:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-api:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

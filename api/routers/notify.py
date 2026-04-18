@@ -14,6 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from api.auth import require_internal
 from api.db import User, get_db
 from api.push_service import send_push
 from tws.index_tracker import _load_history, oracle_stats
@@ -33,7 +34,7 @@ class BroadcastBody(BaseModel):
 @router.post("/register")
 def register_token(body: RegisterTokenBody, db: Session = Depends(get_db)):
     """Store an Expo push token for a device."""
-    user = db.get(User, body.device_id)
+    user = db.query(User).filter(User.device_id == body.device_id).first()
     if not user:
         raise HTTPException(404, "Device not registered. Call /sandbox/register first.")
     user.push_token = body.expo_token
@@ -42,7 +43,7 @@ def register_token(body: RegisterTokenBody, db: Session = Depends(get_db)):
 
 
 @router.post("/broadcast")
-def broadcast(body: BroadcastBody, db: Session = Depends(get_db)):
+def broadcast(body: BroadcastBody, db: Session = Depends(get_db), _: None = Depends(require_internal)):
     """
     Internal endpoint called by master_run.py.
     type='morning' → send today's prediction to all users.
@@ -94,7 +95,7 @@ def broadcast(body: BroadcastBody, db: Session = Depends(get_db)):
                 continue
             user_bet = (
                 db.query(Bet)
-                .filter(Bet.device_id == u.device_id, Bet.date == today)
+                .filter(Bet.user_id == u.id, Bet.date == today)
                 .first()
             )
             if user_bet and user_bet.status == "settled" and user_bet.payout is not None:

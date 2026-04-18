@@ -1,0 +1,29 @@
+# Exclude large/irrelevant directories from Cloud Build uploads
+dashboard/
+mobile/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.git/
+
+# Large data directories — uploaded to GCS separately
+data/ohlcv/
+data_us/ohlcv/
+
+# Secrets & local config
+.env
+*.db
+*.sqlite
+
+# Node
+node_modules/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/

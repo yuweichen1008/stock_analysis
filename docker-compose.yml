@@ -1,37 +1,63 @@
 version: "3.9"
 
 services:
-  dashboard:
-    build: .
-    image: stock-dashboard
-    container_name: stock_dashboard
+  # ── Local PostgreSQL (replaces SQLite in dev) ──────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: stock_postgres
     restart: unless-stopped
+    environment:
+      POSTGRES_DB:       oracle
+      POSTGRES_USER:     oracle
+      POSTGRES_PASSWORD: oracle_dev_password
     ports:
-      - "8501:8501"
+      - "5432:5432"
     volumes:
-      # Persist all data between container restarts
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oracle"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: oracle-api
+    container_name: stock_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
       - ./data:/app/data
       - ./data_us:/app/data_us
-      # Mount .env so secrets never bake into the image
       - ./.env:/app/.env:ro
-      # Persist CTBC browser profile (cookies/session)
-      - ./brokers/.ctbc_profile:/app/brokers/.ctbc_profile
     environment:
       - PYTHONUNBUFFERED=1
       - TZ=Asia/Taipei
+      - DATABASE_URL=postgresql+psycopg2://oracle:oracle_dev_password@postgres:5432/oracle
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
 
-  # Optional: run the analysis pipeline on a schedule via cron inside the container
+  # ── Analysis pipeline (cron-triggered) ────────────────────────────────────
   pipeline:
-    build: .
-    image: stock-dashboard
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stock-pipeline
     container_name: stock_pipeline
-    restart: "no"   # Started manually or via host cron
+    restart: "no"
+    depends_on:
+      - api
     volumes:
       - ./data:/app/data
       - ./data_us:/app/data_us
@@ -42,4 +68,7 @@ services:
       - TZ=Asia/Taipei
     command: ["python", "master_run.py"]
     profiles:
-      - pipeline   # Only starts with: docker compose --profile pipeline up pipeline
+      - pipeline   # docker compose --profile pipeline up pipeline
+
+volumes:
+  postgres_data:
