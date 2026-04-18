@@ -192,7 +192,7 @@ def _fetch_finviz_watchlist(max_results: int = 10) -> list:
     # "Oversold (45)" is NOT a valid Finviz filter — we filter the DataFrame instead
     try:
         df_broad = get_screener_results(
-            filters={"Country": "USA", "Market Cap.": "Mid+ (over $2bln)"},
+            filters={"Country": "USA", "Market Cap.": "+Mid (over $2bln)"},
             order_by="RSI (14)",
         )
         if not df_broad.empty and "RSI (14)" in df_broad.columns:

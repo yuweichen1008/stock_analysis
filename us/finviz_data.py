@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Full filter list: https://finviz.com/screener.ashx
 _DEFAULT_FILTERS: dict[str, str] = {
     "Country": "USA",
-    "Market Cap.": "Small+ (over $300mln)",
+    "Market Cap.": "+Small (over $300mln)",
 }
 
 

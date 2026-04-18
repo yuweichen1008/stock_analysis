@@ -73,7 +73,7 @@ def _fetch_movers() -> dict:
 
         # Oversold — RSI < 30, mid+ cap
         df_over = get_screener_results(
-            {"RSI (14)": "Oversold (30)", "Market Cap.": "Mid+ (over $2bln)"},
+            {"RSI (14)": "Oversold (30)", "Market Cap.": "+Mid (over $2bln)"},
             order_by="RSI (14)",
         )
         if not df_over.empty:
