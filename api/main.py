@@ -16,7 +16,16 @@ from api.routers import auth as auth_router
 from api.routers import watchlist as watchlist_router
 from api.routers import feed as feed_router
 
-limiter = Limiter(key_func=get_remote_address)
+
+def _get_real_ip(request: Request) -> str:
+    """Use X-Forwarded-For when behind Cloud Run's load balancer."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_get_real_ip)
 
 app = FastAPI(
     title="Oracle API",
@@ -97,4 +106,13 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    from sqlalchemy import text
+    from api.db import SessionLocal
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        db_status = "ok"
+    except Exception as e:
+        db_status = str(e)
+    return {"status": "ok", "db": db_status}

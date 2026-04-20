@@ -17,7 +17,28 @@ from us.us_trending import run_us_trending
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-API_BASE = os.environ.get("ORACLE_API_BASE", "http://localhost:8000")
+API_BASE = os.environ.get("ORACLE_API_BASE", "http://localhost:8080")
+
+
+def _upload_signals_to_gcs(base_dir: str) -> None:
+    """Upload current_trending.csv files to GCS after pipeline run."""
+    try:
+        from api.config import settings
+        if not settings.GCS_BUCKET:
+            return
+        from google.cloud import storage
+        client = storage.Client()
+        bucket = client.bucket(settings.GCS_BUCKET)
+        for local_rel, gcs_key in [
+            ("current_trending.csv",          "current_trending.csv"),
+            ("data_us/current_trending.csv",   "data_us/current_trending.csv"),
+        ]:
+            local = os.path.join(base_dir, local_rel)
+            if os.path.exists(local):
+                bucket.blob(gcs_key).upload_from_filename(local)
+                print(f"[GCS] Uploaded {gcs_key}")
+    except Exception as e:
+        print(f"[!] GCS signal upload failed (non-fatal): {e}")
 
 
 def _api_call(method: str, path: str, body: dict = None, timeout: int = 5):
@@ -106,6 +127,10 @@ def run_resolve_step():
     print("[resolve] 執行 AI 分析並發送訊號股報告...")
     send_stock_report(BASE_DIR)
 
+    # Step 5: Upload CSVs to GCS so the API can serve fresh signals
+    print("[resolve] 上傳訊號 CSV 至 GCS...")
+    _upload_signals_to_gcs(BASE_DIR)
+
     print("✅ [resolve] 完成")
 
 
@@ -155,6 +180,10 @@ def run_us_pipeline():
         send_us_report(BASE_DIR)
     except Exception as e:
         print(f"[!] US Telegram report failed (non-fatal): {e}")
+
+    # Step 6: Upload CSVs to GCS so the API can serve fresh US signals
+    print("[Step 6] Uploading US signal CSVs to GCS...")
+    _upload_signals_to_gcs(BASE_DIR)
 
 
 def _tw_session() -> bool:

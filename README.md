@@ -1,272 +1,406 @@
-# TWS AI Stock Analyst
+# Oracle — AI Stock Screener
 
-Automated stock signal pipeline covering Taiwan (TWSE) and US markets — daily mean-reversion analysis, full-market heatmaps, multi-broker portfolio management, and a personal web trading dashboard.
+An iOS app that shows you which Taiwan and US stocks are worth looking at today. Every trading day it scans thousands of stocks, scores them, runs AI analysis, and sends a Telegram report — all automatically on Google Cloud.
 
 ---
 
-## How It Works
+## What It Does (ELI5)
+
+Imagine you want to buy a stock that's temporarily on sale but is fundamentally healthy. Oracle finds those stocks for you every day:
+
+1. **8:00 AM (Taiwan time)** — Oracle predicts whether the TAIEX index will go up or down today, using 5 market signals (S&P 500 overnight, VIX fear gauge, momentum, etc.)
+2. **2:05 PM** — After the market closes, Oracle checks if it was right, runs the signal scan, and sends you a Telegram report with today's best stock picks
+3. **iOS app** — Browse signals, bet virtual coins on the daily prediction, save stocks to a watchlist, read community trade ideas
+
+---
+
+## Signal Logic
+
+A stock passes only when **all three** conditions are true at the same time:
+
+| Check | Rule | What it means |
+|-------|------|---------------|
+| Long-term trend | Price above MA120 | The stock has been healthy for 6 months |
+| Short-term dip | Bias < −2% (price ≥ 2% below 20-day average) | It temporarily pulled back |
+| Oversold | RSI (14-period) < 35 | Sellers are exhausted — bounce is likely |
+
+**Score (0–10):** RSI depth (4 pts) + Bias depth (3 pts) + volume quality (2 pts) + MA120 margin (1 pt). Higher = cleaner setup.
+
+Additional enrichment per signal: foreign investor (外資) flow z-score, short interest, news sentiment (VADER), Ledoit-Wolf 5-day target price.
+
+---
+
+## Architecture
 
 ```
-TWSE API
-  └─► Top-20 trending tickers (daily)
-        └─► K-line sync — 250 days via yfinance
-              └─► Technical filters (MA120 / MA20 / RSI / Bias)
-                    └─► Institutional flow + short interest (TWSE)
-                          └─► News sentiment (Google News + VADER)
-                                └─► Ledoit-Wolf target price prediction
-                                      └─► Telegram report + charts
+Cloud Scheduler
+  ├─ 08:00 TST Mon-Fri ──► Cloud Run Job: oracle-predict
+  │                            compute Bull/Bear prediction
+  │                            → save oracle_history.csv → GCS
+  │                            → Telegram prediction message
+  │                            → push notification to iOS users
+  │
+  └─ 14:05 TST Mon-Fri ──► Cloud Run Job: oracle-resolve
+                               sync OHLCV data from TWSE
+                               resolve today's prediction
+                               → settle virtual coin bets (POST /api/sandbox/settle)
+                               run TW + US signal scan
+                               → upload current_trending.csv → GCS
+                               → Telegram reports (heatmap, buy list)
+                               → push notifications (POST /api/notify/broadcast)
 
-TWSE MI_INDEX (full market ~1068 stocks)
-  └─► Industry heatmap (Plotly Treemap, 4000×2400 px)
-        └─► Top-3 sector zoom charts
-              └─► Investment intel — limit-up news, near-signal watchlist
-```
+Cloud Run Services
+  ├─ oracle-api (min 0 → scales to zero, max 10)
+  │    reads oracle_history.csv    ◄── GCS
+  │    reads current_trending.csv  ◄── GCS  (cached 1h in memory)
+  │    serves the iOS app
+  │
+  └─ oracle-telegram-bot (min 1 → always on)
+       polls Telegram
+       responds to ticker lookups and broker commands
 
-`master_run.py` runs the full TWS + US pipelines in sequence.
-Designed to be triggered daily by cron or Google Cloud Scheduler.
+Cloud SQL PostgreSQL
+  └─ users, bets, stock_bets, watchlist, posts, reactions, subscribers
 
----
-
-## Signal Logic (Mean Reversion)
-
-A stock passes the filter only when **all three** conditions are met simultaneously:
-
-| Condition | Rule | Interpretation |
-|-----------|------|----------------|
-| MA120 (life line) | `price > MA120` | Long-term uptrend intact |
-| Bias (pullback) | `bias < −2%` | Price ≥ 2% below MA20 |
-| RSI (14-period, Wilder's) | `RSI < 35` | Short-term oversold — bounce likely |
-
-**Signal score (0–10):** RSI depth (4 pts) + Bias depth (3 pts) + volume quality (2 pts) + MA120 margin (1 pt). Higher score = cleaner setup.
-
----
-
-## Features
-
-### Signal Pipeline
-- **Daily top-20 sync** — TWSE official trending list; cold-start fallback to curated seed list
-- **250-day OHLCV** — per-ticker K-lines stored in `data/ohlcv/`; thread-safe parallel download
-- **Wilder's RSI** — exponential smoothing (`ewm(alpha=1/14, adjust=False)`) matching TradingView
-- **Institutional flow** — 外資 rolling 5/20/60-day sums + z-score anomaly detection (TWSE API)
-- **Short interest** — daily 借券賣出 data from TWSE
-- **News sentiment** — Google News RSS scored with VADER + Chinese keyword fallback
-- **Ledoit-Wolf prediction** — shrinkage covariance for stable 5-day target price
-- **Fundamental enrichment** — ROE, PE, debt ratio, dividend yield, analyst target (90-day auto-refresh)
-- **Universe snapshot** — `universe_snapshot.csv` tracks all ever-scanned tickers with latest metrics
-
-### Telegram Reports
-- **Signal board** — horizontal RSI bar chart; all tracked tickers color-coded (🟢 signal / 🟠 watch / 🔴 below MA120)
-- **Buy list message** — actionable table: ticker · price · RSI · Bias% · score · vol ratio · foreign flow · sentiment
-- **TWSE Market Map** — full 1068-stock heatmap (red/green % change, log-scaled volume tiles, 4000×2400 px sent as document)
-- **Sector zoom charts** — focused heatmap for top-3 sectors by trading value
-- **Investment intelligence** — limit-up stocks with latest news, near-signal watchlist, sector momentum, intra-day trade idea
-
-### US Pipeline
-- S&P 500 tickers from Wikipedia; same mean-reversion filters applied
-- Signal output to `data_us/current_trending.csv`
-
-### Broker Integration (IBKR · Moomoo · Robinhood)
-- Unified `BrokerClient` interface — connect, get_positions, get_balance, get_orders, place_order
-- **IBKR**: `ib_insync` — TWS/IB Gateway; supports VWAP / TWAP / ADAPTIVE execution algos
-- **Moomoo**: `moomoo-api` — OpenD daemon; US + HK markets; SIMULATE and REAL modes
-- **Robinhood**: `robin_stocks` — REST API; no local daemon required
-- Graceful degradation — unconfigured/unreachable brokers are skipped silently
-- **Telegram commands**: `/balance` · `/positions` · `/orders [days]`
-
-### Web Dashboard (Streamlit)
-- Password-protected personal dashboard (`bcrypt` + `streamlit-authenticator`)
-- **Overview** — balance cards, total portfolio value, allocation pie chart, P&L by position
-- **Positions** — merged holdings across all brokers enriched with PE/ROE/target price
-- **Trading** — manual order form (broker · ticker · side · qty · algo) + strategy execution tab
-- **Signals** — Taiwan & US signal tables with one-click "⚡ Trade" button
-- **Backtest** — equity curve, per-ticker win rate, full trade log
-
----
-
-## Project Structure
-
-```
-stock_analysis/
-├── master_run.py              # Daily pipeline (TWS + US) — cron entry point
-├── app.py                     # Interactive Telegram bot
-├── backtester.py              # Mean-reversion backtesting engine
-├── requirements.txt
-├── .env                       # Secrets (see .env.example)
-├── .env.example               # Template — Telegram + broker credentials
-│
-├── tws/
-│   ├── core.py                # TaiwanStockEngine — sync & fundamental refresh
-│   ├── taiwan_trending.py     # Signal filter: apply_filters(), run_taiwan_trending()
-│   ├── telegram_notifier.py   # Report builder + all Telegram senders
-│   │                          #   generate_signal_board()     RSI bar chart
-│   │                          #   generate_market_heatmap()   1068-stock map
-│   │                          #   generate_sector_zoom()      per-sector map
-│   │                          #   build_investment_intel()    news + watchlist
-│   │                          #   send_market_overview()      daily market summary
-│   │                          #   send_stock_report()         signal buy list
-│   ├── models.py              # StockAI — Ledoit-Wolf prediction
-│   ├── utils.py               # TWSE fetchers, sentiment, TelegramTool, fetch_twse_all_prices()
-│   ├── bq_helper.py           # BigQuery write helper (cloud mode)
-│   └── cloud_function.py      # Google Cloud Function entry point
-│
-├── us/
-│   ├── core.py                # USStockEngine — S&P 500 sync
-│   └── us_trending.py         # US signal filter (reuses apply_filters)
-│
-├── brokers/
-│   ├── base.py                # BrokerClient ABC
-│   ├── ibkr.py                # Interactive Brokers (ib_insync)
-│   ├── moomoo.py              # Moomoo/Futu (moomoo-api)
-│   ├── robinhood.py           # Robinhood (robin_stocks)
-│   ├── manager.py             # BrokerManager — aggregator + order router
-│   └── strategies.py          # MeanReversionExecutor, ManualOrderExecutor
-│
-├── dashboard/
-│   ├── app.py                 # Streamlit entry point + auth gate
-│   ├── auth.py                # streamlit-authenticator wrapper
-│   ├── config.yaml            # Hashed password config (gitignored)
-│   ├── data_helpers.py        # Cached data loaders, broker manager singleton
-│   └── pages/
-│       ├── 1_Overview.py      # Portfolio summary across all brokers
-│       ├── 2_Positions.py     # Holdings table + industry chart
-│       ├── 3_Trading.py       # Order form + strategy execution
-│       ├── 4_Signals.py       # Today's TW + US signal stocks
-│       └── 5_Backtest.py      # Backtest runner + equity curve
-│
-├── data/
-│   ├── ohlcv/                 # Per-ticker OHLCV CSVs (250 days)
-│   ├── tickers/               # Daily top-20 lists (top20_YYYYMMDD.csv)
-│   └── company/
-│       ├── company_mapping.csv    # Fundamentals snapshot
-│       ├── company_history.csv    # Point-in-time fundamental log
-│       └── universe_snapshot.csv  # All-time scanned tickers + latest metrics
-│
-├── data_us/                   # US OHLCV + signal output
-└── tests/
-    └── test_taiwan_trending.py  # 19 tests: RSI, filters, score, bias
+GCS bucket (YOUR_PROJECT_ID-oracle-signals)
+  ├─ current_trending.csv           ← written by resolve job, read by API
+  ├─ data_us/current_trending.csv   ← written by US pipeline, read by API
+  └─ data/index/oracle_history.csv  ← written by predict+resolve, read by API
 ```
 
 ---
 
-## Setup
+## Run Locally
 
-### 1. Install dependencies
+**Requirements:** Docker Desktop, a `.env` file.
 
 ```bash
-pip install -r requirements.txt
-```
-
-### 2. Configure environment
-
-Copy `.env.example` to `.env` and fill in your credentials:
-
-```bash
+# 1. Copy env template and fill in secrets (see .env section below)
 cp .env.example .env
+
+# 2. Start PostgreSQL + FastAPI
+docker compose up api postgres
+
+# 3. (optional) Run the signal pipeline once to generate data
+docker compose --profile pipeline run pipeline python master_run.py --step resolve
 ```
 
-Required for the daily pipeline:
+API is at `http://localhost:8080`. Interactive docs at `http://localhost:8080/docs`.
+
+### `.env` secrets
+
+**Required for local dev:**
+```env
+DATABASE_URL=postgresql+psycopg2://oracle:oracle_dev_password@localhost:5432/oracle
+JWT_SECRET=any-random-string-32-chars-minimum
+INTERNAL_API_SECRET=another-random-string
 ```
+
+**Required for pipeline + Telegram:**
+```env
 TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_channel_or_chat_id
+TELEGRAM_CHAT_ID=your_channel_id
 ```
 
-Optional — add only the broker(s) you use:
-```
-# IBKR (requires TWS or IB Gateway running)
-IBKR_HOST=127.0.0.1
-IBKR_PORT=7497          # 7497=paper TWS · 7496=live TWS · 4002=live Gateway
-IBKR_CLIENT_ID=1
-
-# Moomoo (requires OpenD daemon running)
-MOOMOO_HOST=127.0.0.1
-MOOMOO_PORT=11111
-MOOMOO_TRADE_ENV=SIMULATE   # or REAL
-
-# Robinhood (no daemon needed)
-ROBINHOOD_USERNAME=your@email.com
-ROBINHOOD_PASSWORD=yourpassword
+**Required for AI analysis:**
+```env
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### 3. Run
-
-| Mode | Command | Description |
-|------|---------|-------------|
-| Daily scan | `python master_run.py` | TWS + US sync → filter → enrich → Telegram |
-| Interactive bot | `python app.py` | Telegram query bot + broker commands |
-| Web dashboard | `streamlit run dashboard/app.py --server.address=127.0.0.1` | Personal trading UI |
-| Backtest | `python backtester.py` | Replay strategy on historical data |
-
-### 4. Dashboard first-time setup
-
-Generate a bcrypt password hash (one-time):
-
-```bash
-python3 -c "
-import bcrypt, getpass
-pw = getpass.getpass('Dashboard password: ')
-print(bcrypt.hashpw(pw.encode(), bcrypt.gensalt(12)).decode())
-"
-```
-
-Paste the hash into `dashboard/config.yaml` under `credentials.usernames.admin.password`.
-
-### 5. Cron example (daily at 15:30 Taiwan time, Mon–Fri)
-
-```cron
-30 15 * * 1-5  cd /path/to/stock_analysis && python master_run.py >> logs/run.log 2>&1
+**Optional (GCS, auth):**
+```env
+GCS_BUCKET=                   # leave empty in local dev; set in prod
+GOOGLE_CLIENT_ID=             # Google OAuth
+APPLE_TEAM_ID=                # Apple Sign-In
+APPLE_CLIENT_ID=              # Apple Sign-In bundle ID
+ORACLE_API_BASE=http://localhost:8080   # pipeline → API callouts
 ```
 
 ---
 
-## Algorithm Insights
+## Deploy to GCP
 
-### Mean Reversion Signal
+### Step 1 — One-time infrastructure setup
 
-The strategy exploits temporary dislocations in stocks with confirmed long-term strength. MA120 acts as a health gate — only stocks above their 120-day average qualify. Within that subset, Bias and RSI identify short-term exhaustion points where a bounce is statistically likely.
-
-### Wilder's RSI
-
-Uses exponential smoothing with `alpha = 1/window` and `adjust=False` — the same method as TradingView and most professional charting platforms. The simpler SMA-seeded RSI produces materially different values near extreme readings.
-
-### Ledoit-Wolf Shrinkage Estimator
-
-Raw sample covariance matrices are noisy when observations are few relative to assets. Ledoit-Wolf shrinks the sample covariance toward a structured target, producing a more stable risk estimate. The model derives an expected 5-day return and computes:
-
-```
-target_price = current_price × (1 + expected_gain)
+```bash
+# Edit the PROJECT_ID at the top of the script, then:
+./setup-gcp.sh
 ```
 
-### Institutional Flow Z-Score
+This script (~3 min + 5 min for Cloud SQL) does everything:
+- Enables all required APIs
+- Creates Artifact Registry repo `oracle`
+- Creates GCS bucket `YOUR_PROJECT_ID-oracle-signals`
+- Creates Cloud SQL PostgreSQL instance `oracle-db` (db-f1-micro)
+- Creates service account `oracle-sa` with correct IAM roles
+- Generates `JWT_SECRET` and `INTERNAL_API_SECRET` automatically
+- Creates all 11 secrets in Secret Manager
+- Grants Cloud Build the IAM roles it needs
+- Creates the two Cloud Scheduler jobs (predict + resolve)
+- Patches `YOUR_PROJECT_ID` in all YAML files automatically
 
-Foreign net buy/sell figures (外資) are normalized into a z-score over a 60-day rolling window. Z-score > +2 signals unusual accumulation; < −2 signals unusual distribution — a demand-side complement to the technical signal.
+### Step 2 — Fill in the secrets the script can't auto-generate
 
-### TWSE Market Heatmap
+```bash
+gcloud secrets versions add TELEGRAM_BOT_TOKEN --data-file=- <<< 'your-bot-token'
+gcloud secrets versions add TELEGRAM_CHAT_ID   --data-file=- <<< 'your-chat-id'
+gcloud secrets versions add ANTHROPIC_API_KEY  --data-file=- <<< 'sk-ant-...'
+gcloud secrets versions add GOOGLE_CLIENT_ID   --data-file=- <<< 'your-google-client-id'
+```
 
-Fetches all ~1068 regular-stock closing prices from `TWSE MI_INDEX?type=ALL`. Tile size is log-scaled by trading value (prevents TSMC from dominating). Sent as a Telegram document (no compression) at 4000×2400 px so users can pinch-zoom to any sector.
+### Step 3 — Deploy
+
+```bash
+gcloud builds submit --config cloudbuild.yaml
+```
+
+Cloud Build does 10 steps automatically:
+1. Build slim API Docker image (`Dockerfile.api`)
+2. Build full pipeline Docker image (`Dockerfile`)
+3–4. Push both images to Artifact Registry
+5. Deploy Alembic migration job (schema setup)
+6. Run the migration (creates all 7 tables in Cloud SQL)
+7. Deploy `oracle-api` Cloud Run service
+8. Deploy `oracle-telegram-bot` Cloud Run service
+9. Deploy `oracle-predict` Cloud Run Job
+10. Deploy `oracle-resolve` Cloud Run Job
+
+### Step 4 — Update `ORACLE_API_BASE` after first deploy
+
+The pipeline jobs call the API to settle bets and send push notifications. After step 3, get your Cloud Run URL and update the secret:
+
+```bash
+gcloud run services describe oracle-api --region=us-central1 --format='value(status.url)'
+# → https://oracle-api-xxxx-uc.a.run.app
+
+gcloud secrets versions add ORACLE_API_BASE --data-file=- <<< 'https://oracle-api-xxxx-uc.a.run.app'
+```
+
+### Step 5 — Test everything
+
+```bash
+# Health check (should show db: "ok")
+curl https://oracle-api-xxxx-uc.a.run.app/health
+
+# Manually trigger predict job
+gcloud run jobs execute oracle-predict --region=us-central1 --wait
+
+# Check Cloud Scheduler
+gcloud scheduler jobs list --location=us-central1
+```
+
+---
+
+## Cron Schedule
+
+| Job | When (TST) | Days | What it does | Max runtime |
+|-----|-----------|------|-------------|-------------|
+| `oracle-predict` | 08:00 | Mon–Fri | Compute TAIEX Bull/Bear prediction → GCS → Telegram + push | 10 min |
+| `oracle-resolve` | 14:05 | Mon–Fri | Sync OHLCV → resolve Oracle → settle bets → TW signals → GCS → Telegram | 15 min |
+
+The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-time to commands.
+
+For the **US pipeline** (S&P 500, after 16:00 ET = ~05:00 TST next day), run manually or add a third scheduler job:
+```bash
+gcloud run jobs execute oracle-resolve --region=us-central1 \
+  --override-args="--market,US"
+```
+
+---
+
+## API Endpoints
+
+| Route | Auth | Description |
+|-------|------|-------------|
+| `GET /health` | — | Service + DB health check |
+| `GET /api/signals/tw` | — | Taiwan signal stocks |
+| `GET /api/signals/us` | — | US signal stocks |
+| `GET /api/signals/search?q=AAPL&market=US` | — | Ticker / name search |
+| `GET /api/oracle/today` | — | Today's TAIEX prediction |
+| `GET /api/oracle/history` | — | Last 30 resolved predictions |
+| `GET /api/oracle/stats` | — | Win rate, streak, cumulative score |
+| `GET /api/oracle/live` | — | Live TAIEX level (15-min delayed) |
+| `GET /api/agents/analyze?ticker=X&market=US` | — | 6-agent AI analysis (1h cache) |
+| `GET /api/agents/batch?market=US` | — | Batch AI for top signal stocks |
+| `POST /api/auth/apple` | — | Apple Sign-In → JWT |
+| `POST /api/auth/google` | — | Google OAuth → JWT |
+| `POST /api/auth/device` | — | Anonymous device-ID → JWT |
+| `GET /api/sandbox/me` | JWT | Coin balance, bets, rank |
+| `POST /api/sandbox/bet` | JWT | Place Bull/Bear bet (locked after 09:00 TST) |
+| `GET /api/sandbox/leaderboard` | — | Top 20 players |
+| `GET /api/watchlist` | JWT | My saved tickers |
+| `POST /api/watchlist` | JWT | Add ticker |
+| `DELETE /api/watchlist/{ticker}` | JWT | Remove ticker |
+| `GET /api/watchlist/alerts` | JWT | Watchlisted tickers with a signal today |
+| `GET /api/feed` | optional JWT | Community posts (paginated) |
+| `POST /api/feed` | JWT | Create post (max 280 chars, 10/hour) |
+| `POST /api/feed/{id}/react` | JWT | Toggle 🐂🐻🔥 reaction |
+| `POST /api/sandbox/settle` | X-API-Secret | Settle bets (called by pipeline) |
+| `POST /api/notify/broadcast` | X-API-Secret | Send push notifications (called by pipeline) |
+| `POST /api/stocks/settle` | X-API-Secret | Settle stock bets (called by pipeline) |
+
+---
+
+## Database Schema
+
+```
+users           id, auth_provider (apple/google/device), auth_id, email,
+                display_name, avatar_url, coins, push_token
+
+subscribers     telegram_id, active  (Telegram opt-in for daily reports)
+
+bets            user_id→users, date, direction (Bull/Bear), amount, payout
+
+stock_bets      user_id→users, ticker, direction, entry/exit price, payout
+
+watchlist       user_id→users, ticker, market  [unique per user+ticker+market]
+
+posts           user_id→users, ticker, content (280 chars), signal_type
+
+reactions       user_id→users, post_id→posts, emoji_type  [unique per user+post]
+```
+
+Migrations managed by Alembic → `alembic/versions/0001_initial_schema.py`.
+
+---
+
+## Mobile App Setup
+
+```bash
+cd mobile
+npm install
+npx expo start          # local dev (point to localhost:8080)
+```
+
+**Build for TestFlight:**
+```bash
+eas build --platform ios --profile preview
+```
+
+**Before production build**, update `mobile/app.json`:
+- `extra.apiBaseProd` → your Cloud Run URL
+- `ios.bundleIdentifier` → `com.yourco.oracle`
+- `extra.easProjectId` → your EAS project ID
+
+**App tabs:**
+
+| Tab | Description |
+|-----|-------------|
+| 📊 Signals | TW + US signal stocks · RSI/score · tap for AI detail |
+| 🔮 Oracle | TAIEX prediction · bet virtual coins · view history |
+| 👥 Community | Post trade ideas · react with 🐂🐻🔥 · market filter |
+| ⭐ Watchlist | Saved tickers · today's signal alerts |
+| 👤 Profile | Coins · leaderboard rank · sign out |
 
 ---
 
 ## Telegram Commands
 
-| Command | Description |
+| Command | What it does |
 |---------|-------------|
-| Send a 4-digit code | Look up fundamentals + AI target price for any TWS ticker |
-| `/balance` | Account cash + net value across all connected brokers |
-| `/positions` | Open holdings across all connected brokers |
-| `/orders [days]` | Recent order history (default: last 7 days) |
+| Send a 4-digit code | Fundamentals + AI target price for any Taiwan stock |
+| `/balance` | Cash + net value across connected brokers |
+| `/positions` | Open holdings |
+| `/orders [days]` | Recent order history (default: 7 days) |
+
+**Daily automated reports (sent to `TELEGRAM_CHAT_ID`):**
+
+| Time (TST) | Report |
+|-----------|--------|
+| 08:00 | TAIEX Bull/Bear prediction + 5-factor breakdown + confidence % |
+| 14:05 | Prediction result + TAIEX change + points earned + streak |
+| 14:05 | Full-market heatmap (1068 stocks, 4000×2400 px) + sector zoom charts |
+| 14:05 | Signal buy list — RSI, bias, score, foreign flow, sentiment per ticker |
+
+> **Note:** Broker commands (`/balance`, `/positions`, `/orders`) require a local broker daemon (IBKR TWS, Moomoo OpenD). These won't work on Cloud Run unless you run the bot locally with the daemons active.
+
+---
+
+## Project Layout
+
+```
+stock_analysis/
+│
+├── api/                         FastAPI backend
+│   ├── config.py                  All settings (reads from .env / Secret Manager)
+│   ├── db.py                      SQLAlchemy models (7 tables)
+│   ├── auth.py                    JWT + Apple/Google token verification
+│   ├── main.py                    App entry point, CORS, rate limiting
+│   └── routers/
+│       ├── auth.py                POST /api/auth/{apple,google,device}
+│       ├── oracle.py              GET  /api/oracle/{today,history,stats,live}
+│       ├── signals.py             GET  /api/signals/{tw,us,search}  ← GCS cached
+│       ├── agents.py              GET  /api/agents/{analyze,batch}  ← Claude AI
+│       ├── sandbox.py             GET/POST /api/sandbox/  (betting game)
+│       ├── watchlist.py           CRUD /api/watchlist + /api/watchlist/alerts
+│       ├── feed.py                GET/POST /api/feed + reactions
+│       ├── notify.py              POST /api/notify/broadcast (internal)
+│       ├── stocks.py              POST /api/stocks/settle (internal)
+│       └── subscribe.py           Telegram subscription page + API
+│
+├── tws/                         Taiwan signal pipeline
+│   ├── core.py                    OHLCV sync + fundamentals (Yahoo Finance)
+│   ├── taiwan_trending.py         apply_filters() — MA120 / Bias / RSI gate
+│   ├── index_tracker.py           Oracle prediction + GCS read/write
+│   ├── telegram_notifier.py       Telegram report builder (heatmap, buy list)
+│   ├── models.py                  Ledoit-Wolf 5-day target price
+│   └── utils.py                   TWSE fetchers, VADER sentiment
+│
+├── us/                          US signal pipeline (S&P 500)
+│   ├── core.py                    USStockEngine — yfinance download
+│   └── us_trending.py             Same filters as TW
+│
+├── ai/                          AI analysis layer (Claude)
+│   ├── agents.py                  6-agent + orchestrator (Haiku + Sonnet)
+│   └── analyst.py                 Claude client singleton + prompts
+│
+├── brokers/                     Broker integrations (local only)
+│   ├── ibkr.py                    Interactive Brokers
+│   ├── moomoo.py                  Moomoo/Futu
+│   ├── robinhood.py               Robinhood
+│   └── manager.py                 BrokerManager aggregator
+│
+├── alembic/                     DB migrations
+│   └── versions/0001_initial_schema.py
+│
+├── mobile/                      iOS app (Expo Router)
+│   ├── app/(tabs)/                5 main tabs
+│   ├── app/stock/[ticker].tsx     Stock detail + AI analysis screen
+│   ├── app/create-post.tsx        Community post modal
+│   ├── app/auth.tsx               Sign-in screen
+│   ├── store/auth.ts              Zustand — JWT + user state
+│   ├── store/watchlist.ts         Zustand — watchlist (optimistic updates)
+│   └── lib/api.ts                 Axios with Bearer token interceptor
+│
+├── master_run.py                Daily cron entry point
+│                                  --step predict  (08:00 TST)
+│                                  --step resolve  (14:05 TST)
+│                                  --market US     (manual US run)
+├── app.py                       Interactive Telegram bot (always-on)
+├── backtester.py                Mean-reversion backtest engine
+│
+├── Dockerfile                   Full pipeline image (Playwright, brokers)
+├── Dockerfile.api               Slim API image (no Chromium, ~300MB)
+├── docker-compose.yml           Local dev: postgres + api + pipeline
+│
+├── setup-gcp.sh                 ← Run once to set up all GCP infrastructure
+├── cloudbuild.yaml              CI/CD: builds both images, runs migrations, deploys all
+├── cloud-run-service.yaml       oracle-api service spec
+├── cloud-run-telegram.yaml      oracle-telegram-bot service spec (min 1 instance)
+├── cloud-run-job-predict.yaml   oracle-predict Cloud Run Job spec
+└── cloud-run-job-resolve.yaml   oracle-resolve Cloud Run Job spec
+```
 
 ---
 
 ## Roadmap
 
-- [x] **Milestone 1** — Core data engine, TWSE auto-sync, Telegram interaction, point-in-time history log
-- [x] **Milestone 2** — Plotly charts, Bias factor, Wilder's RSI, signal score (0–10), full-market heatmap, signal board, sector zoom, investment intelligence
-- [x] **Milestone 3** — Backtester: equity curve, win rate, Sharpe ratio, max drawdown
-- [x] **Milestone 4** — US pipeline (S&P 500) + broker integration (IBKR · Moomoo · Robinhood) + personal trading dashboard
-- [ ] **Milestone 5** — LSTM / Transformer deep-learning price prediction
-
----
-
-## Contributing
-
-Pull requests are welcome. Open an issue first for significant feature changes.
+- [x] Taiwan + US signal pipeline (RSI + Bias + MA120, Ledoit-Wolf, institutional flow)
+- [x] TAIEX Market Oracle (daily prediction + scoring game)
+- [x] Multi-agent AI analysis (6 Claude agents + orchestrator)
+- [x] iOS app — 5 tabs, Apple/Google auth, community feed, watchlist
+- [x] FastAPI backend on GCP Cloud Run + Cloud SQL
+- [x] GCP Cloud Scheduler cron jobs (predict + resolve)
+- [ ] US pipeline auto-scheduled on Cloud Scheduler
+- [ ] LSTM / Transformer deep-learning price prediction
+- [ ] App Store release

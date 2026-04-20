@@ -8,6 +8,7 @@ History file: data/index/oracle_history.csv
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 _HISTORY_FILE = Path("data") / "index" / "oracle_history.csv"
+_GCS_ORACLE_OBJECT = "data/index/oracle_history.csv"
 
 _COLS = [
     "date", "direction", "confidence_pct", "factors_json",
@@ -51,7 +53,47 @@ def _history_path(base_dir: str) -> Path:
     return p
 
 
+def _gcs_upload_history(df: pd.DataFrame) -> None:
+    """Upload oracle_history.csv to GCS when GCS_BUCKET is configured."""
+    try:
+        from api.config import settings
+        if not settings.GCS_BUCKET:
+            return
+        from google.cloud import storage
+        client = storage.Client()
+        blob = client.bucket(settings.GCS_BUCKET).blob(_GCS_ORACLE_OBJECT)
+        blob.upload_from_string(df[_COLS].to_csv(index=False), content_type="text/csv")
+        logger.info("Oracle history uploaded to GCS: gs://%s/%s", settings.GCS_BUCKET, _GCS_ORACLE_OBJECT)
+    except Exception as e:
+        logger.warning("GCS oracle history upload failed: %s", e)
+
+
+def _gcs_download_history() -> Optional[pd.DataFrame]:
+    """Download oracle_history.csv from GCS. Returns None if unavailable."""
+    try:
+        from api.config import settings
+        if not settings.GCS_BUCKET:
+            return None
+        from google.cloud import storage
+        client = storage.Client()
+        blob = client.bucket(settings.GCS_BUCKET).blob(_GCS_ORACLE_OBJECT)
+        if not blob.exists():
+            return None
+        df = pd.read_csv(io.StringIO(blob.download_as_text()))
+        for col in _COLS:
+            if col not in df.columns:
+                df[col] = None
+        return df
+    except Exception as e:
+        logger.warning("GCS oracle history download failed: %s", e)
+        return None
+
+
 def _load_history(base_dir: str) -> pd.DataFrame:
+    """Load oracle history — GCS first (production), local disk fallback (dev)."""
+    gcs_df = _gcs_download_history()
+    if gcs_df is not None:
+        return gcs_df
     path = _history_path(base_dir)
     if not path.exists():
         return pd.DataFrame(columns=_COLS)
@@ -66,7 +108,9 @@ def _load_history(base_dir: str) -> pd.DataFrame:
 
 
 def _save_history(base_dir: str, df: pd.DataFrame) -> None:
+    """Save oracle history to local disk and upload to GCS."""
     df[_COLS].to_csv(_history_path(base_dir), index=False)
+    _gcs_upload_history(df)
 
 
 def _fetch_yf_close(ticker: str, period: str = "2d", interval: str = "1d") -> list[float]:

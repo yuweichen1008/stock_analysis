@@ -1,0 +1,59 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: oracle-predict
+  labels:
+    app: oracle-pipeline
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/cloudsql-instances: YOUR_PROJECT_ID:us-central1:oracle-db
+    spec:
+      serviceAccountName: oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+      template:
+        spec:
+          containers:
+            - image: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/oracle/oracle-pipeline:latest
+              command: ["python", "master_run.py", "--step", "predict"]
+              resources:
+                limits:
+                  memory: 1Gi
+                  cpu: "1"
+              env:
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+                - name: TZ
+                  value: Asia/Taipei
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: TELEGRAM_BOT_TOKEN
+                      key: latest
+                - name: ANTHROPIC_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: ANTHROPIC_API_KEY
+                      key: latest
+                - name: GCS_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: GCS_BUCKET
+                      key: latest
+                - name: ORACLE_API_BASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: ORACLE_API_BASE
+                      key: latest
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: DATABASE_URL
+                      key: latest
+                - name: INTERNAL_API_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: INTERNAL_API_SECRET
+                      key: latest
+          timeoutSeconds: 600
+          maxRetries: 1
