@@ -29,6 +29,10 @@ export default function TabLayout() {
         options={{ title: 'Oracle', tabBarIcon: ({ color }) => <TabIcon label="🔮" color={color} /> }}
       />
       <Tabs.Screen
+        name="news"
+        options={{ title: '新聞', tabBarIcon: ({ color }) => <TabIcon label="📰" color={color} /> }}
+      />
+      <Tabs.Screen
         name="community"
         options={{ title: '社群', tabBarIcon: ({ color }) => <TabIcon label="👥" color={color} /> }}
       />

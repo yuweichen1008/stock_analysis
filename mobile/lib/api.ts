@@ -274,6 +274,51 @@ export interface StockStats {
   by_ticker:    { ticker: string; trades: number; wins: number; win_rate: number; payout: number }[];
 }
 
+// ── News + PCR ─────────────────────────────────────────────────────────────
+
+export interface NewsItem {
+  id:                  number;
+  ticker:              string | null;
+  market:              string;
+  headline:            string;
+  source:              string | null;
+  url:                 string | null;
+  published_at:        string;
+  sentiment_score:     number | null;
+  sentiment_label:     'positive' | 'neutral' | 'negative';
+  pcr:                 number | null;
+  pcr_label:           string | null;
+  put_volume:          number | null;
+  call_volume:         number | null;
+  pcr_snapshot_count:  number;
+  related_count:       number;
+}
+
+export interface PcrSnapshot {
+  snapshot_at:  string;
+  pcr:          number | null;
+  pcr_label:    string | null;
+  put_volume:   number | null;
+  call_volume:  number | null;
+}
+
+export const News = {
+  feed: (market = 'all', hours = 12, limit = 50, offset = 0) =>
+    api.get<NewsItem[]>(
+      `/api/news/feed?market=${market}&hours=${hours}&limit=${limit}&offset=${offset}`,
+    ).then(r => r.data),
+
+  pcrHistory: (id: number) =>
+    api.get<{ news_id: number; ticker: string | null; snapshots: PcrSnapshot[] }>(
+      `/api/news/${id}/pcr-history`,
+    ).then(r => r.data),
+
+  related: (id: number) =>
+    api.get<{ news_id: number; related: NewsItem[] }>(
+      `/api/news/${id}/related`,
+    ).then(r => r.data),
+};
+
 export const Stocks = {
   movers:   () => api.get<MoversData>('/api/stocks/movers').then(r => r.data),
   backtest: (tickers: string[]) =>

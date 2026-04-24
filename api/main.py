@@ -15,6 +15,7 @@ from api.routers import oracle, sandbox, signals, notify, subscribe, stocks, age
 from api.routers import auth as auth_router
 from api.routers import watchlist as watchlist_router
 from api.routers import feed as feed_router
+from api.routers import news as news_router
 
 
 def _get_real_ip(request: Request) -> str:
@@ -58,6 +59,7 @@ app.include_router(subscribe.router)
 app.include_router(stocks.router)
 app.include_router(agents.router)
 app.include_router(graph.router)
+app.include_router(news_router.router)
 
 
 @app.get("/")
@@ -100,6 +102,10 @@ def root():
             "/api/graph/signals",
             "/api/graph/sectors",
             "/api/graph/agents",
+            # News + PCR
+            "/api/news/feed",
+            "/api/news/{id}/pcr-history",
+            "/api/news/{id}/related",
         ],
     }
 

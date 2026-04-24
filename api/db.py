@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, ForeignKey,
+    BigInteger, Boolean, Column, DateTime, Float, ForeignKey,
     Integer, String, Text, UniqueConstraint, create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -139,6 +139,37 @@ class Reaction(Base):
     user_id    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     post_id    = Column(Integer, ForeignKey("posts.id"), nullable=False, index=True)
     emoji_type = Column(String(20), nullable=False)   # "bull" | "bear" | "fire"
+
+
+# ── News feed ─────────────────────────────────────────────────────────────────
+
+class NewsItem(Base):
+    __tablename__ = "news_items"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    external_id     = Column(String(128), unique=True, nullable=False, index=True)  # sha1 dedup key
+    ticker          = Column(String(20), nullable=True, index=True)   # None = market-wide
+    market          = Column(String(10), nullable=False)              # "US" | "TW" | "MARKET"
+    headline        = Column(String(512), nullable=False)
+    source          = Column(String(128), nullable=True)
+    url             = Column(String(1024), nullable=True)
+    published_at    = Column(DateTime, nullable=False, index=True)
+    fetched_at      = Column(DateTime, nullable=False)
+    sentiment_score = Column(Float, nullable=True)                    # VADER -1..+1
+    related_ids     = Column(Text, nullable=True)                     # JSON "[3, 17, 42]"
+
+
+class NewsPcrSnapshot(Base):
+    __tablename__ = "news_pcr_snapshots"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    news_item_id = Column(Integer, ForeignKey("news_items.id"), nullable=False, index=True)
+    ticker       = Column(String(20), nullable=False)
+    snapshot_at  = Column(DateTime, nullable=False, index=True)
+    put_volume   = Column(BigInteger, nullable=True)
+    call_volume  = Column(BigInteger, nullable=True)
+    pcr          = Column(Float, nullable=True)        # put_volume / call_volume
+    pcr_label    = Column(String(20), nullable=True)   # extreme_fear/fear/neutral/greed/extreme_greed
 
 
 # ── Session dependency ────────────────────────────────────────────────────────

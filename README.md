@@ -1,16 +1,16 @@
-# Oracle — AI Stock Screener
+# Oracle — AI Stock Screener + Options Sentiment Dashboard
 
-An iOS app that shows you which Taiwan and US stocks are worth looking at today. Every trading day it scans thousands of stocks, scores them, runs AI analysis, and sends a Telegram report — all automatically on Google Cloud.
+An iOS app and web dashboard for Taiwan and US stock analysis. Every trading day it scans thousands of stocks, scores them, runs AI analysis, tracks the **put/call ratio** on market-moving news, and sends a Telegram report — all automatically on Google Cloud.
 
 ---
 
 ## What It Does (ELI5)
 
-Imagine you want to buy a stock that's temporarily on sale but is fundamentally healthy. Oracle finds those stocks for you every day:
-
 1. **8:00 AM (Taiwan time)** — Oracle predicts whether the TAIEX index will go up or down today, using 5 market signals (S&P 500 overnight, VIX fear gauge, momentum, etc.)
-2. **2:05 PM** — After the market closes, Oracle checks if it was right, runs the signal scan, and sends you a Telegram report with today's best stock picks
-3. **iOS app** — Browse signals, bet virtual coins on the daily prediction, save stocks to a watchlist, read community trade ideas
+2. **Every 30 min during market hours** — Fetches the latest news for signal stocks, snapshots the **options put/call ratio** (PCR) so you can see whether the market is positioned to "sell the news" or "buy the news"
+3. **2:05 PM** — After the market closes, Oracle checks if it was right, runs the signal scan, and sends a Telegram report with today's best stock picks
+4. **iOS app** — Browse signals, news with live PCR indicators, bet virtual coins on the daily prediction, save stocks to a watchlist, read community trade ideas
+5. **Web dashboard** — Desktop-friendly two-pane news feed with interactive PCR timeline charts (Recharts)
 
 ---
 
@@ -30,6 +30,25 @@ Additional enrichment per signal: foreign investor (外資) flow z-score, short 
 
 ---
 
+## Put/Call Ratio (PCR) — News Sentiment
+
+For each news item in the past 12 hours, Oracle shows whether options traders are hedging (puts) or buying (calls):
+
+| PCR Range | Label | Meaning |
+|-----------|-------|---------|
+| > 1.5 | Extreme Fear | Heavy put buying — contrarian buy signal historically |
+| 1.0–1.5 | Fear | Elevated hedging around the news |
+| 0.6–1.0 | Neutral | Balanced positioning |
+| 0.4–0.6 | Greed | More calls than puts — bullish bias |
+| < 0.4 | Extreme Greed | Complacency — watch for reversal |
+
+**US stocks:** Real PCR from yfinance options chain (nearest expiry, all strikes summed).  
+**Taiwan stocks:** VADER NLP sentiment proxy — TAIFEX options not accessible via public APIs.
+
+The PCR is snapshotted every 30 minutes while a news item is fresh, building a **PCR timeline** that shows how market positioning shifted after the news broke.
+
+---
+
 ## Architecture
 
 ```
@@ -40,27 +59,41 @@ Cloud Scheduler
   │                            → Telegram prediction message
   │                            → push notification to iOS users
   │
-  └─ 14:05 TST Mon-Fri ──► Cloud Run Job: oracle-resolve
-                               sync OHLCV data from TWSE
-                               resolve today's prediction
-                               → settle virtual coin bets (POST /api/sandbox/settle)
-                               run TW + US signal scan
-                               → upload current_trending.csv → GCS
-                               → Telegram reports (heatmap, buy list)
-                               → push notifications (POST /api/notify/broadcast)
+  ├─ 14:05 TST Mon-Fri ──► Cloud Run Job: oracle-resolve
+  │                            sync OHLCV data from TWSE
+  │                            resolve today's prediction
+  │                            → settle virtual coin bets
+  │                            run TW + US signal scan
+  │                            → upload current_trending.csv → GCS
+  │                            → Telegram reports (heatmap, buy list)
+  │                            → push notifications
+  │
+  ├─ */30 01-06 Mon-Fri ──► Cloud Run Job: oracle-news-poller  (TW market hours)
+  │                            fetch Google News RSS for signal tickers
+  │                            snapshot PCR via yfinance options chain
+  │                            compute cross-related news links (Jaccard)
+  │                            → write to PostgreSQL news_items + news_pcr_snapshots
+  │
+  └─ */30 13-21 Mon-Fri ──► Cloud Run Job: oracle-news-poller  (US market hours)
+                               same as above, for US tickers
 
 Cloud Run Services
   ├─ oracle-api (min 0 → scales to zero, max 10)
   │    reads oracle_history.csv    ◄── GCS
   │    reads current_trending.csv  ◄── GCS  (cached 1h in memory)
-  │    serves the iOS app
+  │    serves iOS app + web dashboard
+  │
+  ├─ oracle-web  (Next.js dashboard, min 0 → max 5)
+  │    two-pane news feed + PCR timeline charts
+  │    proxies /api/* → oracle-api
   │
   └─ oracle-telegram-bot (min 1 → always on)
        polls Telegram
        responds to ticker lookups and broker commands
 
 Cloud SQL PostgreSQL
-  └─ users, bets, stock_bets, watchlist, posts, reactions, subscribers
+  └─ users, bets, stock_bets, watchlist, posts, reactions, subscribers,
+     news_items, news_pcr_snapshots
 
 GCS bucket (YOUR_PROJECT_ID-oracle-signals)
   ├─ current_trending.csv           ← written by resolve job, read by API
@@ -81,11 +114,25 @@ cp .env.example .env
 # 2. Start PostgreSQL + FastAPI
 docker compose up api postgres
 
-# 3. (optional) Run the signal pipeline once to generate data
+# 3. Run DB migrations
+alembic upgrade head
+
+# 4. (optional) Run the signal pipeline once to generate data
 docker compose --profile pipeline run pipeline python master_run.py --step resolve
+
+# 5. (optional) Run the news poller once
+python news_pipeline.py
 ```
 
-API is at `http://localhost:8080`. Interactive docs at `http://localhost:8080/docs`.
+API is at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
+
+**Web dashboard (separate):**
+```bash
+cd web
+npm install
+ORACLE_API_URL=http://localhost:8000 npm run dev
+# → http://localhost:3000
+```
 
 ### `.env` secrets
 
@@ -113,7 +160,8 @@ GCS_BUCKET=                   # leave empty in local dev; set in prod
 GOOGLE_CLIENT_ID=             # Google OAuth
 APPLE_TEAM_ID=                # Apple Sign-In
 APPLE_CLIENT_ID=              # Apple Sign-In bundle ID
-ORACLE_API_BASE=http://localhost:8080   # pipeline → API callouts
+ORACLE_API_BASE=http://localhost:8000   # pipeline → API callouts
+ORACLE_API_URL=http://localhost:8000    # web dashboard → API proxy
 ```
 
 ---
@@ -134,9 +182,9 @@ This script (~3 min + 5 min for Cloud SQL) does everything:
 - Creates Cloud SQL PostgreSQL instance `oracle-db` (db-f1-micro)
 - Creates service account `oracle-sa` with correct IAM roles
 - Generates `JWT_SECRET` and `INTERNAL_API_SECRET` automatically
-- Creates all 11 secrets in Secret Manager
+- Creates all secrets in Secret Manager
 - Grants Cloud Build the IAM roles it needs
-- Creates the two Cloud Scheduler jobs (predict + resolve)
+- Creates Cloud Scheduler jobs (predict + resolve)
 - Patches `YOUR_PROJECT_ID` in all YAML files automatically
 
 ### Step 2 — Fill in the secrets the script can't auto-generate
@@ -154,36 +202,66 @@ gcloud secrets versions add GOOGLE_CLIENT_ID   --data-file=- <<< 'your-google-cl
 gcloud builds submit --config cloudbuild.yaml
 ```
 
-Cloud Build does 10 steps automatically:
+Cloud Build runs 14 steps automatically:
 1. Build slim API Docker image (`Dockerfile.api`)
 2. Build full pipeline Docker image (`Dockerfile`)
 3–4. Push both images to Artifact Registry
-5. Deploy Alembic migration job (schema setup)
-6. Run the migration (creates all 7 tables in Cloud SQL)
+5. Deploy Alembic migration job
+6. Run the migration (creates all 9 tables in Cloud SQL)
 7. Deploy `oracle-api` Cloud Run service
 8. Deploy `oracle-telegram-bot` Cloud Run service
 9. Deploy `oracle-predict` Cloud Run Job
 10. Deploy `oracle-resolve` Cloud Run Job
+11. Build Next.js web dashboard image
+12. Push web image to Artifact Registry
+13. Deploy `oracle-web` Cloud Run service
+14. Deploy `oracle-news-poller` Cloud Run Job
 
-### Step 4 — Update `ORACLE_API_BASE` after first deploy
-
-The pipeline jobs call the API to settle bets and send push notifications. After step 3, get your Cloud Run URL and update the secret:
+### Step 4 — Post-deploy secrets
 
 ```bash
+# Get the API URL
 gcloud run services describe oracle-api --region=us-central1 --format='value(status.url)'
 # → https://oracle-api-xxxx-uc.a.run.app
 
+# Set for pipeline callouts
 gcloud secrets versions add ORACLE_API_BASE --data-file=- <<< 'https://oracle-api-xxxx-uc.a.run.app'
+
+# Set for web dashboard proxy
+gcloud secrets versions add ORACLE_API_URL  --data-file=- <<< 'https://oracle-api-xxxx-uc.a.run.app'
 ```
 
-### Step 5 — Test everything
+### Step 5 — Add Cloud Scheduler jobs for the news poller
 
 ```bash
-# Health check (should show db: "ok")
+# TW market hours (09:00–13:30 TST = 01:00–06:00 UTC)
+gcloud scheduler jobs create http oracle-news-tw \
+  --location=us-central1 \
+  --schedule="*/30 1-6 * * 1-5" \
+  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/YOUR_PROJECT_ID/jobs/oracle-news-poller:run" \
+  --http-method=POST \
+  --oauth-service-account-email=oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+
+# US market hours (09:30–17:00 ET = 13:00–21:00 UTC)
+gcloud scheduler jobs create http oracle-news-us \
+  --location=us-central1 \
+  --schedule="*/30 13-21 * * 1-5" \
+  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/YOUR_PROJECT_ID/jobs/oracle-news-poller:run" \
+  --http-method=POST \
+  --oauth-service-account-email=oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+```
+
+### Step 6 — Test everything
+
+```bash
+# Health check
 curl https://oracle-api-xxxx-uc.a.run.app/health
 
-# Manually trigger predict job
-gcloud run jobs execute oracle-predict --region=us-central1 --wait
+# Run news poller manually
+gcloud run jobs execute oracle-news-poller --region=us-central1 --wait
+
+# Check news feed
+curl "https://oracle-api-xxxx-uc.a.run.app/api/news/feed?market=US&limit=5"
 
 # Check Cloud Scheduler
 gcloud scheduler jobs list --location=us-central1
@@ -193,18 +271,14 @@ gcloud scheduler jobs list --location=us-central1
 
 ## Cron Schedule
 
-| Job | When (TST) | Days | What it does | Max runtime |
+| Job | When (UTC) | Days | What it does | Max runtime |
 |-----|-----------|------|-------------|-------------|
-| `oracle-predict` | 08:00 | Mon–Fri | Compute TAIEX Bull/Bear prediction → GCS → Telegram + push | 10 min |
-| `oracle-resolve` | 14:05 | Mon–Fri | Sync OHLCV → resolve Oracle → settle bets → TW signals → GCS → Telegram | 15 min |
+| `oracle-predict` | 00:00 (08:00 TST) | Mon–Fri | Compute TAIEX Bull/Bear prediction → GCS → Telegram + push | 10 min |
+| `oracle-resolve` | 06:05 (14:05 TST) | Mon–Fri | Sync OHLCV → resolve Oracle → settle bets → signals → GCS → Telegram | 15 min |
+| `oracle-news-poller` | `*/30 1-6` (TW hours) | Mon–Fri | Fetch news + PCR snapshots for TW tickers | 5 min |
+| `oracle-news-poller` | `*/30 13-21` (US hours) | Mon–Fri | Fetch news + PCR snapshots for US tickers | 5 min |
 
 The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-time to commands.
-
-For the **US pipeline** (S&P 500, after 16:00 ET = ~05:00 TST next day), run manually or add a third scheduler job:
-```bash
-gcloud run jobs execute oracle-resolve --region=us-central1 \
-  --override-args="--market,US"
-```
 
 ---
 
@@ -220,6 +294,9 @@ gcloud run jobs execute oracle-resolve --region=us-central1 \
 | `GET /api/oracle/history` | — | Last 30 resolved predictions |
 | `GET /api/oracle/stats` | — | Win rate, streak, cumulative score |
 | `GET /api/oracle/live` | — | Live TAIEX level (15-min delayed) |
+| `GET /api/news/feed?market=US&hours=12` | — | 12h news feed with PCR (5-min cache) |
+| `GET /api/news/{id}/pcr-history` | — | PCR snapshot timeline for one news item |
+| `GET /api/news/{id}/related` | — | Cross-related news items |
 | `GET /api/agents/analyze?ticker=X&market=US` | — | 6-agent AI analysis (1h cache) |
 | `GET /api/agents/batch?market=US` | — | Batch AI for top signal stocks |
 | `POST /api/auth/apple` | — | Apple Sign-In → JWT |
@@ -235,32 +312,43 @@ gcloud run jobs execute oracle-resolve --region=us-central1 \
 | `GET /api/feed` | optional JWT | Community posts (paginated) |
 | `POST /api/feed` | JWT | Create post (max 280 chars, 10/hour) |
 | `POST /api/feed/{id}/react` | JWT | Toggle 🐂🐻🔥 reaction |
+| `GET /subscribe` | — | Telegram subscription web page |
+| `POST /api/subscribe` | — | Subscribe Telegram chat ID |
 | `POST /api/sandbox/settle` | X-API-Secret | Settle bets (called by pipeline) |
-| `POST /api/notify/broadcast` | X-API-Secret | Send push notifications (called by pipeline) |
-| `POST /api/stocks/settle` | X-API-Secret | Settle stock bets (called by pipeline) |
+| `POST /api/notify/broadcast` | X-API-Secret | Send push notifications |
+| `POST /api/stocks/settle` | X-API-Secret | Settle stock bets |
 
 ---
 
 ## Database Schema
 
 ```
-users           id, auth_provider (apple/google/device), auth_id, email,
-                display_name, avatar_url, coins, push_token
+users            id, auth_provider (apple/google/device), auth_id, email,
+                 display_name, avatar_url, coins, push_token
 
-subscribers     telegram_id, active  (Telegram opt-in for daily reports)
+subscribers      telegram_id, active  (Telegram opt-in for daily reports)
 
-bets            user_id→users, date, direction (Bull/Bear), amount, payout
+bets             user_id→users, date, direction (Bull/Bear), amount, payout
 
-stock_bets      user_id→users, ticker, direction, entry/exit price, payout
+stock_bets       user_id→users, ticker, direction, entry/exit price, payout
 
-watchlist       user_id→users, ticker, market  [unique per user+ticker+market]
+watchlist        user_id→users, ticker, market  [unique per user+ticker+market]
 
-posts           user_id→users, ticker, content (280 chars), signal_type
+posts            user_id→users, ticker, content (280 chars), signal_type
 
-reactions       user_id→users, post_id→posts, emoji_type  [unique per user+post]
+reactions        user_id→users, post_id→posts, emoji_type  [unique per user+post]
+
+news_items       external_id (sha1 dedup), ticker, market (US/TW/MARKET),
+                 headline, source, url, published_at, sentiment_score,
+                 related_ids (JSON array)
+
+news_pcr_snapshots  news_item_id→news_items, ticker, snapshot_at,
+                    put_volume, call_volume, pcr, pcr_label
 ```
 
-Migrations managed by Alembic → `alembic/versions/0001_initial_schema.py`.
+Migrations managed by Alembic:
+- `alembic/versions/0001_initial_schema.py` — base tables
+- `alembic/versions/0002_news_and_pcr.py` — news + PCR tables
 
 ---
 
@@ -269,7 +357,7 @@ Migrations managed by Alembic → `alembic/versions/0001_initial_schema.py`.
 ```bash
 cd mobile
 npm install
-npx expo start          # local dev (point to localhost:8080)
+npx expo start          # local dev (points to localhost:8000)
 ```
 
 **Build for TestFlight:**
@@ -288,9 +376,32 @@ eas build --platform ios --profile preview
 |-----|-------------|
 | 📊 Signals | TW + US signal stocks · RSI/score · tap for AI detail |
 | 🔮 Oracle | TAIEX prediction · bet virtual coins · view history |
+| 📰 News | 12h news feed · put/call ratio bars · PCR timeline · related news |
 | 👥 Community | Post trade ideas · react with 🐂🐻🔥 · market filter |
 | ⭐ Watchlist | Saved tickers · today's signal alerts |
 | 👤 Profile | Coins · leaderboard rank · sign out |
+
+---
+
+## Web Dashboard Setup
+
+```bash
+cd web
+npm install
+ORACLE_API_URL=http://localhost:8000 npm run dev
+# → http://localhost:3000/news
+```
+
+**Pages:**
+- `/news` — Two-pane layout: news list with PCR bars (left) + PCR timeline chart + related news (right)
+- `/subscribe` — Telegram subscription page with FAQ and benefit cards
+
+**Build for production:**
+```bash
+cd web && npm run build
+```
+
+The web dashboard is deployed to Cloud Run as `oracle-web` and proxies all `/api/*` requests to `oracle-api`.
 
 ---
 
@@ -309,8 +420,11 @@ eas build --platform ios --profile preview
 |-----------|--------|
 | 08:00 | TAIEX Bull/Bear prediction + 5-factor breakdown + confidence % |
 | 14:05 | Prediction result + TAIEX change + points earned + streak |
-| 14:05 | Full-market heatmap (1068 stocks, 4000×2400 px) + sector zoom charts |
+| 14:05 | Full-market heatmap (1068 stocks) + sector zoom charts |
 | 14:05 | Signal buy list — RSI, bias, score, foreign flow, sentiment per ticker |
+
+**Subscribe to Telegram notifications:**  
+Visit `/subscribe` on the web dashboard or API server. Enter your Telegram Chat ID (get it from [@userinfobot](https://t.me/userinfobot)).
 
 > **Note:** Broker commands (`/balance`, `/positions`, `/orders`) require a local broker daemon (IBKR TWS, Moomoo OpenD). These won't work on Cloud Run unless you run the bot locally with the daemons active.
 
@@ -323,13 +437,14 @@ stock_analysis/
 │
 ├── api/                         FastAPI backend
 │   ├── config.py                  All settings (reads from .env / Secret Manager)
-│   ├── db.py                      SQLAlchemy models (7 tables)
+│   ├── db.py                      SQLAlchemy models (9 tables)
 │   ├── auth.py                    JWT + Apple/Google token verification
 │   ├── main.py                    App entry point, CORS, rate limiting
 │   └── routers/
 │       ├── auth.py                POST /api/auth/{apple,google,device}
 │       ├── oracle.py              GET  /api/oracle/{today,history,stats,live}
 │       ├── signals.py             GET  /api/signals/{tw,us,search}  ← GCS cached
+│       ├── news.py                GET  /api/news/{feed,pcr-history,related}
 │       ├── agents.py              GET  /api/agents/{analyze,batch}  ← Claude AI
 │       ├── sandbox.py             GET/POST /api/sandbox/  (betting game)
 │       ├── watchlist.py           CRUD /api/watchlist + /api/watchlist/alerts
@@ -337,6 +452,11 @@ stock_analysis/
 │       ├── notify.py              POST /api/notify/broadcast (internal)
 │       ├── stocks.py              POST /api/stocks/settle (internal)
 │       └── subscribe.py           Telegram subscription page + API
+│
+├── news/                        News + PCR pipeline package
+│   ├── fetcher.py                 Google News RSS with deduplication (sha1)
+│   ├── pcr.py                     yfinance put/call ratio extraction
+│   └── related.py                 Jaccard keyword clustering for cross-links
 │
 ├── tws/                         Taiwan signal pipeline
 │   ├── core.py                    OHLCV sync + fundamentals (Yahoo Finance)
@@ -361,13 +481,26 @@ stock_analysis/
 │   └── manager.py                 BrokerManager aggregator
 │
 ├── alembic/                     DB migrations
-│   └── versions/0001_initial_schema.py
+│   └── versions/
+│       ├── 0001_initial_schema.py   Base 7 tables
+│       └── 0002_news_and_pcr.py     news_items + news_pcr_snapshots
+│
+├── web/                         Next.js web dashboard
+│   ├── app/news/                  Two-pane PCR dashboard
+│   ├── app/subscribe/             Telegram subscription page
+│   ├── components/                PcrChart, PcrBar, NewsCard, NewsFeed, etc.
+│   ├── lib/api.ts                 fetch wrappers for /api/news/*
+│   └── Dockerfile.web             Multi-stage Node 20 build
 │
 ├── mobile/                      iOS app (Expo Router)
-│   ├── app/(tabs)/                5 main tabs
+│   ├── app/(tabs)/                6 main tabs (index, oracle, news, community, watchlist, profile)
 │   ├── app/stock/[ticker].tsx     Stock detail + AI analysis screen
 │   ├── app/create-post.tsx        Community post modal
 │   ├── app/auth.tsx               Sign-in screen
+│   ├── components/
+│   │   ├── NewsCard.tsx           PCR bar + sentiment indicator card
+│   │   ├── PcrBar.tsx             Red/green put/call volume split bar
+│   │   └── PcrTimeline.tsx        Horizontal PCR snapshot history scroll
 │   ├── store/auth.ts              Zustand — JWT + user state
 │   ├── store/watchlist.ts         Zustand — watchlist (optimistic updates)
 │   └── lib/api.ts                 Axios with Bearer token interceptor
@@ -375,7 +508,7 @@ stock_analysis/
 ├── master_run.py                Daily cron entry point
 │                                  --step predict  (08:00 TST)
 │                                  --step resolve  (14:05 TST)
-│                                  --market US     (manual US run)
+├── news_pipeline.py             News + PCR poller (every 30 min market hours)
 ├── app.py                       Interactive Telegram bot (always-on)
 ├── backtester.py                Mean-reversion backtest engine
 │
@@ -384,11 +517,12 @@ stock_analysis/
 ├── docker-compose.yml           Local dev: postgres + api + pipeline
 │
 ├── setup-gcp.sh                 ← Run once to set up all GCP infrastructure
-├── cloudbuild.yaml              CI/CD: builds both images, runs migrations, deploys all
+├── cloudbuild.yaml              CI/CD: 14 steps — build/push/deploy all services
 ├── cloud-run-service.yaml       oracle-api service spec
 ├── cloud-run-telegram.yaml      oracle-telegram-bot service spec (min 1 instance)
 ├── cloud-run-job-predict.yaml   oracle-predict Cloud Run Job spec
-└── cloud-run-job-resolve.yaml   oracle-resolve Cloud Run Job spec
+├── cloud-run-job-resolve.yaml   oracle-resolve Cloud Run Job spec
+└── cloud-run-job-news.yaml      oracle-news-poller Cloud Run Job spec
 ```
 
 ---
@@ -398,9 +532,12 @@ stock_analysis/
 - [x] Taiwan + US signal pipeline (RSI + Bias + MA120, Ledoit-Wolf, institutional flow)
 - [x] TAIEX Market Oracle (daily prediction + scoring game)
 - [x] Multi-agent AI analysis (6 Claude agents + orchestrator)
-- [x] iOS app — 5 tabs, Apple/Google auth, community feed, watchlist
+- [x] iOS app — 6 tabs, Apple/Google auth, community feed, watchlist
 - [x] FastAPI backend on GCP Cloud Run + Cloud SQL
 - [x] GCP Cloud Scheduler cron jobs (predict + resolve)
+- [x] News feed with put/call ratio — 12h rolling, PCR timeline, cross-related news
+- [x] Next.js web dashboard — two-pane PCR chart view
+- [x] Telegram subscription page with FAQ + subscriber count
 - [ ] US pipeline auto-scheduled on Cloud Scheduler
 - [ ] LSTM / Transformer deep-learning price prediction
 - [ ] App Store release

@@ -123,6 +123,60 @@ steps:
       - cloud-run-job-resolve.yaml
       - --region=${_REGION}
 
+  # ── 11. Build Next.js web dashboard image ─────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-web
+    args:
+      - build
+      - -f
+      - web/Dockerfile.web
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-web:${SHORT_SHA}'
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-web:latest'
+      - web/
+
+  # ── 12. Push web image ─────────────────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-web
+    waitFor: [build-web]
+    args:
+      - push
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-web'
+
+  # ── 13. Deploy web dashboard service ──────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-web
+    waitFor: [push-web]
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - deploy
+      - oracle-web
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-web:${SHORT_SHA}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=3000
+      - --min-instances=0
+      - --max-instances=5
+      - --set-env-vars=NODE_ENV=production
+      - --set-secrets=ORACLE_API_URL=ORACLE_API_URL:latest
+
+  # ── 14. Deploy news poller Cloud Run Job ──────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-job-news
+    waitFor: [push-pipeline]
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - replace
+      - cloud-run-job-news.yaml
+      - --region=${_REGION}
+
 substitutions:
   _REGION: us-central1
 
@@ -131,6 +185,8 @@ images:
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-api:latest'
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-pipeline:${SHORT_SHA}'
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-pipeline:latest'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-web:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/oracle/oracle-web:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY
