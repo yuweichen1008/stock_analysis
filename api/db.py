@@ -172,6 +172,72 @@ class NewsPcrSnapshot(Base):
     pcr_label    = Column(String(20), nullable=True)   # extreme_fear/fear/neutral/greed/extreme_greed
 
 
+# ── Weekly contrarian signals ─────────────────────────────────────────────────
+
+class WeeklySignal(Base):
+    __tablename__ = "weekly_signals"
+    __table_args__ = (UniqueConstraint("ticker", "week_ending", name="uq_weekly_ticker_week"),)
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    ticker      = Column(String(20), nullable=False, index=True)
+    week_ending = Column(String(10), nullable=False, index=True)  # "YYYY-MM-DD"
+    return_pct  = Column(Float, nullable=False)
+    signal_type = Column(String(10), nullable=True)               # "buy" | "sell" | None
+    last_price  = Column(Float, nullable=True)
+    pcr         = Column(Float, nullable=True)
+    pcr_label   = Column(String(20), nullable=True)
+    put_volume  = Column(BigInteger, nullable=True)
+    call_volume = Column(BigInteger, nullable=True)
+    executed    = Column(Boolean, nullable=False, default=False)  # True if order placed
+    order_side  = Column(String(10), nullable=True)               # "BUY" | "SELL"
+    order_qty   = Column(Float, nullable=True)
+    created_at  = Column(DateTime, nullable=False)
+
+
+# ── Options screener ─────────────────────────────────────────────────────────
+
+class OptionsIvSnapshot(Base):
+    """Daily avg implied-volatility per ticker; accumulates for IV Rank computation."""
+    __tablename__ = "options_iv_snapshots"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    ticker      = Column(String(20), nullable=False, index=True)
+    snapshot_at = Column(DateTime, nullable=False, index=True)
+    avg_iv      = Column(Float, nullable=True)   # mean IV across liquid strikes (decimal, e.g. 0.35)
+
+
+class OptionsSignal(Base):
+    """One row per ticker per pipeline run; only written when a signal fires."""
+    __tablename__ = "options_signals"
+    __table_args__ = (UniqueConstraint("ticker", "snapshot_at", name="uq_options_ticker_snap"),)
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    ticker           = Column(String(20), nullable=False, index=True)
+    snapshot_at      = Column(DateTime, nullable=False, index=True)
+    # Price
+    price            = Column(Float, nullable=True)
+    price_change_1d  = Column(Float, nullable=True)   # percent
+    rsi_14           = Column(Float, nullable=True)
+    # Options sentiment
+    pcr              = Column(Float, nullable=True)
+    pcr_label        = Column(String(20), nullable=True)
+    put_volume       = Column(BigInteger, nullable=True)
+    call_volume      = Column(BigInteger, nullable=True)
+    # Volatility
+    avg_iv           = Column(Float, nullable=True)
+    iv_rank          = Column(Float, nullable=True)   # 0-100; null when < 30 days of history
+    # Activity
+    total_oi         = Column(BigInteger, nullable=True)
+    volume_oi_ratio  = Column(Float, nullable=True)
+    # Signal
+    signal_type      = Column(String(20), nullable=True, index=True)  # buy_signal|sell_signal|unusual_activity
+    signal_score     = Column(Float, nullable=True)   # 0-10
+    signal_reason    = Column(String(255), nullable=True)
+    # Execution
+    executed         = Column(Boolean, nullable=False, default=False)
+    created_at       = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
 # ── Session dependency ────────────────────────────────────────────────────────
 
 def get_db():

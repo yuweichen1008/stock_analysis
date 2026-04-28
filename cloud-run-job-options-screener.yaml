@@ -1,0 +1,74 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: oracle-options-screener
+  labels:
+    app: oracle-pipeline
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/cloudsql-instances: YOUR_PROJECT_ID:us-central1:oracle-db
+    spec:
+      serviceAccountName: oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+      template:
+        spec:
+          containers:
+            - image: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/oracle/oracle-pipeline:latest
+              command: ["python", "options_screener_pipeline.py"]
+              resources:
+                limits:
+                  memory: 1Gi
+                  cpu: "2"
+              env:
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+                - name: TZ
+                  value: America/New_York
+                # Set to "false" to enable live iOS push + Telegram broadcast
+                - name: OPTIONS_DRY_RUN
+                  value: "true"
+                - name: ORACLE_API_BASE
+                  value: "https://oracle-api-XXXX-uc.a.run.app"
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: DATABASE_URL
+                      key: latest
+                - name: INTERNAL_API_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: INTERNAL_API_SECRET
+                      key: latest
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: TELEGRAM_BOT_TOKEN
+                      key: latest
+                - name: GCS_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: GCS_BUCKET
+                      key: latest
+          # 200 tickers × 0.3s sleep + options chain fetch ≈ 90s actual;
+          # 1200s provides headroom for rate-limit retries.
+          timeoutSeconds: 1200
+          maxRetries: 1
+
+# ── Cloud Scheduler triggers (configure manually or via cloudbuild.yaml) ──────
+#
+# Morning run: 9:45 AM ET weekdays (15 min after open — avoids opening chaos)
+#   gcloud scheduler jobs create http oracle-options-morning \
+#     --schedule="45 9 * * 1-5" \
+#     --time-zone="America/New_York" \
+#     --uri="https://run.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/jobs/oracle-options-screener:run" \
+#     --message-body="{}" \
+#     --oauth-service-account-email=oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+#
+# Afternoon run: 3:30 PM ET weekdays (end-of-day positioning)
+#   gcloud scheduler jobs create http oracle-options-afternoon \
+#     --schedule="30 15 * * 1-5" \
+#     --time-zone="America/New_York" \
+#     --uri="https://run.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/jobs/oracle-options-screener:run" \
+#     --message-body="{}" \
+#     --oauth-service-account-email=oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com

@@ -177,6 +177,18 @@ steps:
       - cloud-run-job-news.yaml
       - --region=${_REGION}
 
+  # ── 15. Deploy weekly signals Cloud Run Job ────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-job-weekly
+    waitFor: [push-pipeline]
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - replace
+      - cloud-run-job-weekly.yaml
+      - --region=${_REGION}
+
 substitutions:
   _REGION: us-central1
 

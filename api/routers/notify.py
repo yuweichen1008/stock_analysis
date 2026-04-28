@@ -121,8 +121,61 @@ def broadcast(body: BroadcastBody, db: Session = Depends(get_db), _: None = Depe
             sent += 1
         result = {"ok": True, "sent": sent}
 
+    elif body.type == "options_signals":
+        from api.db import OptionsSignal
+        from sqlalchemy import func as sqlfunc
+
+        latest_snap = db.query(sqlfunc.max(OptionsSignal.snapshot_at)).scalar()
+        if not latest_snap:
+            return {"ok": False, "reason": "no options signals in DB"}
+
+        top_rows = (
+            db.query(OptionsSignal)
+            .filter(
+                OptionsSignal.snapshot_at == latest_snap,
+                OptionsSignal.signal_type.isnot(None),
+            )
+            .order_by(OptionsSignal.signal_score.desc())
+            .limit(3)
+            .all()
+        )
+        if not top_rows:
+            return {"ok": False, "reason": "no option signals in latest snapshot"}
+
+        total_signals = (
+            db.query(OptionsSignal)
+            .filter(
+                OptionsSignal.snapshot_at == latest_snap,
+                OptionsSignal.signal_type.isnot(None),
+            )
+            .count()
+        )
+
+        lines: list[str] = []
+        for r in top_rows:
+            rsi_s = f"RSI={r.rsi_14:.0f}" if r.rsi_14 is not None else "RSI=—"
+            pcr_s = f"PCR={r.pcr:.2f}" if r.pcr is not None else "PCR=—"
+            lines.append(f"{r.ticker} {r.signal_type.replace('_',' ').upper()} | {rsi_s} {pcr_s}")
+
+        remaining = total_signals - len(top_rows)
+        body_text = "\n".join(lines)
+        if remaining > 0:
+            body_text += f"\n+{remaining} more signals"
+
+        tokens = [u.push_token for u in db.query(User).all() if u.push_token]
+        result = send_push(
+            tokens,
+            title="📊 Oracle Options Screener",
+            body=body_text,
+            data={
+                "type":        "options_signals",
+                "count":       total_signals,
+                "snapshot_at": latest_snap.isoformat(),
+            },
+        )
+
     else:
-        raise HTTPException(400, "type must be 'morning' or 'result'")
+        raise HTTPException(400, "type must be 'morning', 'result', or 'options_signals'")
 
     return result
 

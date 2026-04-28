@@ -136,7 +136,7 @@ done
 
 # ── 8. Update YAML files with real PROJECT_ID ──────────────────────────────────
 echo "📝 Patching YOUR_PROJECT_ID in YAML files..."
-for FILE in cloud-run-service.yaml cloud-run-telegram.yaml cloud-run-job-predict.yaml cloud-run-job-resolve.yaml; do
+for FILE in cloud-run-service.yaml cloud-run-telegram.yaml cloud-run-job-predict.yaml cloud-run-job-resolve.yaml cloud-run-job-news.yaml cloud-run-job-weekly.yaml; do
   if [[ -f "$FILE" ]]; then
     sed -i.bak "s/YOUR_PROJECT_ID/${PROJECT_ID}/g" "$FILE"
     rm -f "${FILE}.bak"
@@ -175,6 +175,36 @@ gcloud scheduler jobs create http oracle-resolve \
   --oauth-service-account-email="$SCHEDULER_SA" \
   --description="Daily TW pipeline + Oracle resolution at 14:05 TST" 2>/dev/null || \
   echo "  oracle-resolve scheduler job already exists"
+
+gcloud scheduler jobs create http oracle-news-poller-tw \
+  --location="$REGION" \
+  --schedule="*/30 1-6 * * 1-5" \
+  --time-zone="UTC" \
+  --uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/oracle-news-poller:run" \
+  --message-body='{}' \
+  --oauth-service-account-email="$SCHEDULER_SA" \
+  --description="News poller during TW market hours (09:00–13:30 TST)" 2>/dev/null || \
+  echo "  oracle-news-poller-tw scheduler job already exists"
+
+gcloud scheduler jobs create http oracle-news-poller-us \
+  --location="$REGION" \
+  --schedule="*/30 13-21 * * 1-5" \
+  --time-zone="UTC" \
+  --uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/oracle-news-poller:run" \
+  --message-body='{}' \
+  --oauth-service-account-email="$SCHEDULER_SA" \
+  --description="News poller during US market hours (09:30–17:00 ET)" 2>/dev/null || \
+  echo "  oracle-news-poller-us scheduler job already exists"
+
+gcloud scheduler jobs create http oracle-weekly-signals \
+  --location="$REGION" \
+  --schedule="30 15 * * 1" \
+  --time-zone="UTC" \
+  --uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/oracle-weekly-signals:run" \
+  --message-body='{}' \
+  --oauth-service-account-email="$SCHEDULER_SA" \
+  --description="Weekly ±5% contrarian signals every Monday 10:30 ET" 2>/dev/null || \
+  echo "  oracle-weekly-signals scheduler job already exists"
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 echo ""

@@ -16,6 +16,8 @@ from api.routers import auth as auth_router
 from api.routers import watchlist as watchlist_router
 from api.routers import feed as feed_router
 from api.routers import news as news_router
+from api.routers import weekly as weekly_router
+from api.routers import options as options_router
 
 
 def _get_real_ip(request: Request) -> str:
@@ -60,6 +62,8 @@ app.include_router(stocks.router)
 app.include_router(agents.router)
 app.include_router(graph.router)
 app.include_router(news_router.router)
+app.include_router(weekly_router.router)
+app.include_router(options_router.router)
 
 
 @app.get("/")
@@ -106,6 +110,13 @@ def root():
             "/api/news/feed",
             "/api/news/{id}/pcr-history",
             "/api/news/{id}/related",
+            # Weekly contrarian signals
+            "/api/weekly/signals",
+            "/api/weekly/signals/{ticker}/history",
+            # Options screener
+            "/api/options/screener",
+            "/api/options/screener/{ticker}/history",
+            "/api/options/overview",
         ],
     }
 

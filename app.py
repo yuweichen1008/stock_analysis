@@ -122,6 +122,69 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 
+async def cmd_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/options — Show top US options signals (RSI + PCR + IV Rank screener)."""
+    await update.message.reply_text("⏳ Fetching options signals…")
+    try:
+        import sys
+        from pathlib import Path
+        if str(Path(__file__).resolve().parent) not in sys.path:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from api.db import SessionLocal, OptionsSignal
+        from sqlalchemy import func as sqlfunc
+
+        db = SessionLocal()
+        latest_snap = db.query(sqlfunc.max(OptionsSignal.snapshot_at)).scalar()
+        if not latest_snap:
+            db.close()
+            await update.message.reply_text("No options signals available yet. Run the screener pipeline first.")
+            return
+
+        rows = (
+            db.query(OptionsSignal)
+            .filter(
+                OptionsSignal.snapshot_at == latest_snap,
+                OptionsSignal.signal_type.isnot(None),
+            )
+            .order_by(OptionsSignal.signal_score.desc())
+            .limit(5)
+            .all()
+        )
+        total = (
+            db.query(OptionsSignal)
+            .filter(
+                OptionsSignal.snapshot_at == latest_snap,
+                OptionsSignal.signal_type.isnot(None),
+            )
+            .count()
+        )
+        db.close()
+
+        if not rows:
+            await update.message.reply_text("No signals in latest snapshot.")
+            return
+
+        snap_ts = latest_snap.strftime("%Y-%m-%d %H:%M ET")
+        lines = [f"📊 *Oracle Options Signals* — {snap_ts}\n"]
+        for r in rows:
+            emoji = {"buy_signal": "🟢", "sell_signal": "🔴", "unusual_activity": "⚡"}.get(r.signal_type, "?")
+            label = (r.signal_type or "").replace("_", " ").title()
+            rsi_s = f"{r.rsi_14:.1f}" if r.rsi_14 is not None else "n/a"
+            pcr_s = f"{r.pcr:.2f}" if r.pcr is not None else "n/a"
+            ivr_s = f"{r.iv_rank:.0f}" if r.iv_rank is not None else "—"
+            lines.append(
+                f"{emoji} *{r.ticker}* — {label} (score {r.signal_score:.1f})\n"
+                f"RSI: {rsi_s}  PCR: {pcr_s}({r.pcr_label or ''})  IV Rank: {ivr_s}"
+            )
+        if total > len(rows):
+            lines.append(f"\n…and {total - len(rows)} more signals")
+        text = "\n\n".join(lines)
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        logger.exception("cmd_options error: %s", e)
+        await update.message.reply_text("⚠️ Failed to fetch options signals.")
+
+
 if __name__ == "__main__":
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     app = ApplicationBuilder().token(TOKEN).build()
@@ -130,8 +193,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("balance",   cmd_balance))
     app.add_handler(CommandHandler("positions", cmd_positions))
     app.add_handler(CommandHandler("orders",    cmd_orders))
+    app.add_handler(CommandHandler("options",   cmd_options))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
     print("🤖 Telegram Bot 互動模式啟動中…")
-    print("Commands: /balance  /positions  /orders [days]  or send a 4-digit stock code")
+    print("Commands: /balance  /positions  /orders [days]  /options  or send a 4-digit stock code")
     app.run_polling()

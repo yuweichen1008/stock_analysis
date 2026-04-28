@@ -1,4 +1,4 @@
-import type { NewsItem, PcrHistoryResponse, RelatedResponse } from "./types";
+import type { NewsItem, PcrHistoryResponse, RelatedResponse, WeeklySignalsResponse, WeeklyHistoryResponse, OptionsScreenerResponse, OptionsHistoryResponse, OptionsOverview } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
@@ -44,3 +44,38 @@ export const unsubscribeTelegram = async (telegram_id: string): Promise<void> =>
   });
   if (!res.ok) throw new Error("Unsubscribe failed");
 };
+
+export const weeklySignals = (
+  signalOnly = true,
+  limit = 200,
+  week = ""
+): Promise<WeeklySignalsResponse> =>
+  get(
+    `/api/weekly/signals?signal_only=${signalOnly}&limit=${limit}${week ? `&week=${encodeURIComponent(week)}` : ""}`
+  );
+
+export const weeklyHistory = (ticker: string): Promise<WeeklyHistoryResponse> =>
+  get(`/api/weekly/signals/${encodeURIComponent(ticker)}/history`);
+
+export const optionsScreener = (
+  signalOnly = true,
+  limit = 20,
+  signalType = "",
+  pcrLabel = "",
+  rsiZone = ""
+): Promise<OptionsScreenerResponse> => {
+  const params = new URLSearchParams({
+    signal_only: String(signalOnly),
+    limit: String(limit),
+    ...(signalType && { signal_type: signalType }),
+    ...(pcrLabel   && { pcr_label:   pcrLabel }),
+    ...(rsiZone    && { rsi_zone:    rsiZone }),
+  });
+  return get(`/api/options/screener?${params}`);
+};
+
+export const optionsHistory = (ticker: string): Promise<OptionsHistoryResponse> =>
+  get(`/api/options/screener/${encodeURIComponent(ticker)}/history`);
+
+export const optionsOverview = (): Promise<OptionsOverview> =>
+  get("/api/options/overview");

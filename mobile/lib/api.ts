@@ -319,6 +319,47 @@ export const News = {
     ).then(r => r.data),
 };
 
+// ── Weekly contrarian signals ──────────────────────────────────────────────
+
+export interface WeeklySignalItem {
+  id:          number;
+  ticker:      string;
+  week_ending: string;
+  return_pct:  number;
+  signal_type: 'buy' | 'sell' | null;
+  last_price:  number | null;
+  pcr:         number | null;
+  pcr_label:   string | null;
+  put_volume:  number | null;
+  call_volume: number | null;
+  executed:    boolean;
+  order_side:  string | null;
+  order_qty:   number | null;
+}
+
+export interface WeeklySignalsResponse {
+  week_ending: string;
+  count:       number;
+  signals:     WeeklySignalItem[];
+}
+
+export interface WeeklyHistoryResponse {
+  ticker:  string;
+  history: WeeklySignalItem[];
+}
+
+export const Weekly = {
+  signals: (signalOnly = true, limit = 100, week = '') =>
+    api.get<WeeklySignalsResponse>(
+      `/api/weekly/signals?signal_only=${signalOnly}&limit=${limit}${week ? `&week=${week}` : ''}`,
+    ).then(r => r.data),
+
+  history: (ticker: string) =>
+    api.get<WeeklyHistoryResponse>(
+      `/api/weekly/signals/${encodeURIComponent(ticker)}/history`,
+    ).then(r => r.data),
+};
+
 export const Stocks = {
   movers:   () => api.get<MoversData>('/api/stocks/movers').then(r => r.data),
   backtest: (tickers: string[]) =>
@@ -331,6 +372,66 @@ export const Stocks = {
     api.get<StockBetRow[]>(`/api/stocks/history/${device_id}?limit=${limit}`).then(r => r.data),
   stats: (device_id: string) =>
     api.get<StockStats>(`/api/stocks/stats/${device_id}`).then(r => r.data),
+};
+
+// ── Options screener ──────────────────────────────────────────────────────
+
+export interface OptionsSignalItem {
+  id:               number;
+  ticker:           string;
+  snapshot_at:      string;
+  price:            number | null;
+  price_change_1d:  number | null;
+  rsi_14:           number | null;
+  pcr:              number | null;
+  pcr_label:        string | null;
+  put_volume:       number | null;
+  call_volume:      number | null;
+  avg_iv:           number | null;
+  iv_rank:          number | null;
+  total_oi:         number | null;
+  volume_oi_ratio:  number | null;
+  signal_type:      'buy_signal' | 'sell_signal' | 'unusual_activity' | null;
+  signal_score:     number | null;
+  signal_reason:    string | null;
+  executed:         boolean;
+  created_at:       string;
+}
+
+export interface OptionsScreenerResponse {
+  snapshot_at: string | null;
+  count:       number;
+  signals:     OptionsSignalItem[];
+}
+
+export interface OptionsHistoryResponse {
+  ticker:  string;
+  history: OptionsSignalItem[];
+}
+
+export interface OptionsOverview {
+  vix:           number | null;
+  market_pcr:    number | null;
+  buy_count:     number;
+  sell_count:    number;
+  unusual_count: number;
+  top_signals:   OptionsSignalItem[];
+  snapshot_at:   string | null;
+}
+
+export const Options = {
+  screener: (signalOnly = true, limit = 20) =>
+    api.get<OptionsScreenerResponse>(
+      `/api/options/screener?signal_only=${signalOnly}&limit=${limit}`,
+    ).then(r => r.data),
+
+  history: (ticker: string) =>
+    api.get<OptionsHistoryResponse>(
+      `/api/options/screener/${encodeURIComponent(ticker)}/history`,
+    ).then(r => r.data),
+
+  overview: () =>
+    api.get<OptionsOverview>('/api/options/overview').then(r => r.data),
 };
 
 export default api;

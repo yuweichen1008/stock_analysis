@@ -5,11 +5,11 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors } from '../../constants/colors';
-import { Signals, SignalsData, Stocks, MoversData, BacktestResult, MoverRow } from '../../lib/api';
+import { Signals, SignalsData, Stocks, MoversData, BacktestResult, MoverRow, Weekly, WeeklySignalItem, WeeklySignalsResponse } from '../../lib/api';
 import { getOrCreateDeviceId } from '../../lib/device';
 import SignalCard from '../../components/SignalCard';
 
-type Tab = 'signals' | 'movers' | 'backtest';
+type Tab = 'signals' | 'movers' | 'backtest' | 'weekly';
 
 export default function SignalsScreen() {
   const router = useRouter();
@@ -22,6 +22,10 @@ export default function SignalsScreen() {
   const [usData, setUsData]             = useState<SignalsData | null>(null);
   const [market, setMarket]             = useState<'TW' | 'US'>('US');
 
+  // Weekly signals state
+  const [weeklyData, setWeeklyData]     = useState<WeeklySignalsResponse | null>(null);
+  const [weeklyFilter, setWeeklyFilter] = useState<'all' | 'buy' | 'sell'>('all');
+
   // Movers + backtest state
   const [movers, setMovers]             = useState<MoversData | null>(null);
   const [moverCat, setMoverCat]         = useState<'all_movers' | 'top_gainers' | 'oversold' | 'high_volume'>('all_movers');
@@ -32,14 +36,16 @@ export default function SignalsScreen() {
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      const [tw, us, mv] = await Promise.all([
+      const [tw, us, mv, wk] = await Promise.all([
         Signals.tw().catch(() => null),
         Signals.us().catch(() => null),
         Stocks.movers().catch(() => null),
+        Weekly.signals().catch(() => null),
       ]);
       setTwData(tw);
       setUsData(us);
       setMovers(mv);
+      setWeeklyData(wk);
     } catch (e) {
       console.warn('[Market] Fetch error:', e);
     } finally {
@@ -105,8 +111,9 @@ export default function SignalsScreen() {
     <View style={styles.container}>
       {/* Top nav tabs */}
       <View style={styles.nav}>
-        <NavBtn label="🔥 Movers"  active={tab === 'movers'}   onPress={() => setTab('movers')} />
-        <NavBtn label="📈 Signals" active={tab === 'signals'}  onPress={() => setTab('signals')} />
+        <NavBtn label="🔥 Movers"   active={tab === 'movers'}   onPress={() => setTab('movers')} />
+        <NavBtn label="📈 Signals"  active={tab === 'signals'}  onPress={() => setTab('signals')} />
+        <NavBtn label="📅 週訊號"   active={tab === 'weekly'}   onPress={() => setTab('weekly')} />
         <NavBtn label="🧪 Backtest" active={tab === 'backtest'} onPress={() => setTab('backtest')} />
       </View>
 
@@ -230,6 +237,38 @@ export default function SignalsScreen() {
             )}
           </>
         )}
+
+        {/* ── WEEKLY tab ──────────────────────────────────────────── */}
+        {tab === 'weekly' && (
+          <>
+            {weeklyData && (
+              <Text style={styles.cacheNote}>
+                週結算：{weeklyData.week_ending} · {weeklyData.count} 個訊號
+              </Text>
+            )}
+            <View style={styles.pills}>
+              {(['all', 'buy', 'sell'] as const).map(f => (
+                <TouchableOpacity
+                  key={f}
+                  style={[styles.pill, weeklyFilter === f && styles.pillActive]}
+                  onPress={() => setWeeklyFilter(f)}
+                >
+                  <Text style={[styles.pillText, weeklyFilter === f && styles.pillTextActive]}>
+                    {f === 'all' ? '全部' : f === 'buy' ? '🟢 買入' : '🔴 賣出'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {!weeklyData && <Text style={styles.empty}>週訊號載入中…</Text>}
+            {weeklyData && weeklyData.signals.length === 0 && (
+              <Text style={styles.empty}>本週暫無 ±5% 訊號</Text>
+            )}
+            {(weeklyData?.signals ?? [])
+              .filter(s => weeklyFilter === 'all' || s.signal_type === weeklyFilter)
+              .map(s => <WeeklySignalCard key={s.id} item={s} />)}
+          </>
+        )}
       </ScrollView>
     </View>
   );
@@ -327,6 +366,54 @@ function BacktestCard({ result }: { result: BacktestResult }) {
       </View>
       {result.last_signal && (
         <Text style={btStyles.last}>最近訊號：{result.last_signal}</Text>
+      )}
+    </View>
+  );
+}
+
+function WeeklySignalCard({ item }: { item: WeeklySignalItem }) {
+  const isBuy   = item.signal_type === 'buy';
+  const retPct  = (item.return_pct * 100).toFixed(1);
+  const qty     = item.last_price && item.last_price > 0
+    ? (5 / item.last_price).toFixed(4)
+    : null;
+  const putFrac = (item.put_volume && item.call_volume && (item.put_volume + item.call_volume) > 0)
+    ? item.put_volume / (item.put_volume + item.call_volume)
+    : null;
+
+  return (
+    <View style={wkStyles.card}>
+      <View style={wkStyles.header}>
+        <View style={[wkStyles.badge, isBuy ? wkStyles.buyBadge : wkStyles.sellBadge]}>
+          <Text style={[wkStyles.badgeText, { color: isBuy ? Colors.bull : Colors.bear }]}>
+            {isBuy ? '🟢 買入' : '🔴 賣出'}
+          </Text>
+        </View>
+        <Text style={wkStyles.ticker}>{item.ticker}</Text>
+        <Text style={[wkStyles.ret, { color: isBuy ? Colors.bull : Colors.bear }]}>
+          {isBuy ? '' : '+'}{retPct}%
+        </Text>
+      </View>
+
+      <View style={wkStyles.row}>
+        {item.last_price != null && (
+          <Chip label="價格" value={`$${item.last_price.toFixed(2)}`} color={Colors.textPrimary} />
+        )}
+        {qty && <Chip label="≈數量" value={qty} color={Colors.textMuted} />}
+        <Chip label="金額" value="$5" color={Colors.gold} />
+        {item.pcr != null && (
+          <Chip label="PCR" value={item.pcr.toFixed(2)} color={item.pcr > 1.0 ? Colors.bear : Colors.bull} />
+        )}
+      </View>
+
+      {putFrac != null && (
+        <View style={wkStyles.pcrBar}>
+          <View style={[wkStyles.pcrPut, { flex: putFrac }]} />
+          <View style={[wkStyles.pcrCall, { flex: 1 - putFrac }]} />
+        </View>
+      )}
+      {item.pcr_label && (
+        <Text style={wkStyles.pcrLabel}>{item.pcr_label.replace('_', ' ')}</Text>
       )}
     </View>
   );
@@ -431,4 +518,20 @@ const btStyles = StyleSheet.create({
   badgeText: { fontSize: 13, fontWeight: '700' },
   row:       { flexDirection: 'row', paddingVertical: 4 },
   last:      { fontSize: 10, color: Colors.textMuted, marginTop: 8 },
+});
+
+const wkStyles = StyleSheet.create({
+  card:      { backgroundColor: Colors.surface, borderRadius: 14, padding: 14, marginBottom: 10 },
+  header:    { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  badge:     { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20, borderWidth: 1 },
+  buyBadge:  { backgroundColor: Colors.bullDim, borderColor: Colors.bull },
+  sellBadge: { backgroundColor: Colors.bearDim, borderColor: Colors.bear },
+  badgeText: { fontSize: 11, fontWeight: '700' },
+  ticker:    { fontSize: 18, fontWeight: '800', color: Colors.textPrimary, flex: 1 },
+  ret:       { fontSize: 15, fontWeight: '700' },
+  row:       { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
+  pcrBar:    { flexDirection: 'row', height: 6, borderRadius: 3, overflow: 'hidden', marginBottom: 4 },
+  pcrPut:    { backgroundColor: Colors.bear },
+  pcrCall:   { backgroundColor: Colors.bull },
+  pcrLabel:  { fontSize: 10, color: Colors.textMuted, textTransform: 'capitalize' },
 });

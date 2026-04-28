@@ -10,6 +10,8 @@ export const metadata: Metadata = {
 
 const NAV = [
   { href: "/news",      label: "📰 News & PCR" },
+  { href: "/weekly",    label: "📅 Weekly Signals" },
+  { href: "/options",   label: "📈 Options" },
   { href: "/subscribe", label: "📬 Subscribe" },
 ];
 
