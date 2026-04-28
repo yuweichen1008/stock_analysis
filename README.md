@@ -1,16 +1,53 @@
 # Oracle — AI Stock Screener + Options Sentiment Dashboard
 
-An iOS app and web dashboard for Taiwan and US stock analysis. Every trading day it scans thousands of stocks, scores them, runs AI analysis, tracks the **put/call ratio** on market-moving news, and sends a Telegram report — all automatically on Google Cloud.
+An iOS app and web dashboard for Taiwan and US stock analysis. Every trading day it scans thousands of stocks, scores them, runs AI analysis, tracks the **put/call ratio** on market-moving news, and sends a Telegram report — all automatically on Google Cloud. A daily **US options screener** identifies actionable RSI + PCR + IV Rank setups across ~200 liquid stocks and pushes top signals to subscribers.
 
 ---
 
 ## What It Does (ELI5)
 
 1. **8:00 AM (Taiwan time)** — Oracle predicts whether the TAIEX index will go up or down today, using 5 market signals (S&P 500 overnight, VIX fear gauge, momentum, etc.)
-2. **Every 30 min during market hours** — Fetches the latest news for signal stocks, snapshots the **options put/call ratio** (PCR) so you can see whether the market is positioned to "sell the news" or "buy the news"
-3. **2:05 PM** — After the market closes, Oracle checks if it was right, runs the signal scan, and sends a Telegram report with today's best stock picks
-4. **iOS app** — Browse signals, news with live PCR indicators, bet virtual coins on the daily prediction, save stocks to a watchlist, read community trade ideas
-5. **Web dashboard** — Desktop-friendly two-pane news feed with interactive PCR timeline charts (Recharts)
+2. **9:45 AM + 3:30 PM ET (US weekdays)** — Options screener scans ~200 liquid US stocks for RSI extremes, PCR fear/greed, IV Rank, and unusual options flow — scores each setup 0-10 and pushes the top signals to subscribers
+3. **Every 30 min during market hours** — Fetches the latest news for signal stocks, snapshots the **options put/call ratio** (PCR) so you can see whether the market is positioned to "sell the news" or "buy the news"
+4. **2:05 PM (Taiwan time)** — After the market closes, Oracle checks if it was right, runs the signal scan, and sends a Telegram report with today's best stock picks
+5. **iOS app** — Browse signals, news with live PCR indicators, bet virtual coins on the daily prediction, save stocks to a watchlist, read community trade ideas
+6. **Web dashboard** — Desktop-friendly two-pane news feed, weekly contrarian signals, and **options screener** with RSI+PCR dual-axis charts and IV Rank badges
+
+---
+
+## US Options Screener
+
+Runs twice daily on weekdays (9:45 AM and 3:30 PM ET). Scans ~200 pre-filtered stocks:
+
+**Universe pre-filter (priority order):**
+1. Finviz unusual options volume — highest-signal subset (~30-80 tickers)
+2. Recent weekly contrarian signal tickers — continuity with the weekly pipeline
+3. S&P 500 fill — fills remaining budget up to 200 tickers
+
+**Metrics computed per ticker:**
+| Metric | Source | How |
+|--------|--------|-----|
+| RSI(14) | yfinance 30d OHLCV | Wilder exponential smoothing |
+| PCR | yfinance options chain (2 nearest expiries) | put_vol / call_vol |
+| Avg IV | yfinance impliedVolatility | Mean across liquid strikes |
+| IV Rank | Accumulated `options_iv_snapshots` | (IV_today − IV_52w_low) / (IV_52w_high − IV_52w_low) × 100 |
+| Vol/OI ratio | Options chain | (put_vol + call_vol) / open_interest |
+
+**Signal rules:**
+| Type | Condition | What it means |
+|------|-----------|---------------|
+| `buy_signal` | RSI < 30 **and** PCR > 1.0 **and** IV Rank < 50 | Oversold + fear + cheap options |
+| `sell_signal` | RSI > 70 **and** PCR < 0.6 **and** IV Rank < 50 | Overbought + greed + cheap options |
+| `unusual_activity` | Vol/OI > 3.0× (any RSI) | Informed flow detected |
+
+**Score (0–10):** RSI depth (4 pts) + PCR extreme (3 pts) + IV Rank cheap (2 pts) + unusual vol (1 pt)
+
+**IV Rank cold-start:** `null` for the first ~2 weeks while daily snapshots accumulate. Signals still fire — the IV condition is treated as met (conservative). Becomes accurate after 30+ pipeline runs.
+
+**Subscriber delivery:**
+- iOS push notification: top 3 signals → all registered devices
+- Telegram broadcast: top 5 signals → all active subscribers (set `OPTIONS_DRY_RUN=false`)
+- `/options` Telegram command for on-demand results
 
 ---
 
@@ -74,8 +111,16 @@ Cloud Scheduler
   │                            compute cross-related news links (Jaccard)
   │                            → write to PostgreSQL news_items + news_pcr_snapshots
   │
-  └─ */30 13-21 Mon-Fri ──► Cloud Run Job: oracle-news-poller  (US market hours)
-                               same as above, for US tickers
+  ├─ */30 13-21 Mon-Fri ──► Cloud Run Job: oracle-news-poller  (US market hours)
+  │                            same as above, for US tickers
+  │
+  ├─ 09:45 ET Mon-Fri ───► Cloud Run Job: oracle-options-screener  (morning)
+  │                            scan ~200 US stocks for RSI + PCR + IV Rank signals
+  │                            → write options_signals + options_iv_snapshots to DB
+  │                            → iOS push + Telegram broadcast (if OPTIONS_DRY_RUN=false)
+  │
+  └─ 15:30 ET Mon-Fri ───► Cloud Run Job: oracle-options-screener  (afternoon)
+                               same as above, captures end-of-day positioning
 
 Cloud Run Services
   ├─ oracle-api (min 0 → scales to zero, max 10)
@@ -277,6 +322,9 @@ gcloud scheduler jobs list --location=us-central1
 | `oracle-resolve` | 06:05 (14:05 TST) | Mon–Fri | Sync OHLCV → resolve Oracle → settle bets → signals → GCS → Telegram | 15 min |
 | `oracle-news-poller` | `*/30 1-6` (TW hours) | Mon–Fri | Fetch news + PCR snapshots for TW tickers | 5 min |
 | `oracle-news-poller` | `*/30 13-21` (US hours) | Mon–Fri | Fetch news + PCR snapshots for US tickers | 5 min |
+| `oracle-options-screener` | `45 9` ET (09:45 ET) | Mon–Fri | Options screener — RSI + PCR + IV Rank, push signals | 20 min |
+| `oracle-options-screener` | `30 15` ET (15:30 ET) | Mon–Fri | Options screener — afternoon run, end-of-day positioning | 20 min |
+| `oracle-weekly-signals` | `30 10` ET Mon (10:30 ET) | Mon | US ±5% contrarian trades — buy dip, sell rip | 15 min |
 
 The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-time to commands.
 
@@ -312,10 +360,15 @@ The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-
 | `GET /api/feed` | optional JWT | Community posts (paginated) |
 | `POST /api/feed` | JWT | Create post (max 280 chars, 10/hour) |
 | `POST /api/feed/{id}/react` | JWT | Toggle 🐂🐻🔥 reaction |
+| `GET /api/weekly/signals` | — | Weekly ±5% contrarian signals with PCR |
+| `GET /api/weekly/signals/{ticker}/history` | — | 52-week signal history for one ticker |
+| `GET /api/options/screener` | — | Latest options signals (RSI+PCR+IV Rank, 5-min cache) |
+| `GET /api/options/screener/{ticker}/history` | — | 30-day options signal history for one ticker |
+| `GET /api/options/overview` | — | VIX, market PCR, buy/sell/unusual counts, top 3 signals |
 | `GET /subscribe` | — | Telegram subscription web page |
 | `POST /api/subscribe` | — | Subscribe Telegram chat ID |
 | `POST /api/sandbox/settle` | X-API-Secret | Settle bets (called by pipeline) |
-| `POST /api/notify/broadcast` | X-API-Secret | Send push notifications |
+| `POST /api/notify/broadcast` | X-API-Secret | Send push notifications (morning/result/options_signals) |
 | `POST /api/stocks/settle` | X-API-Secret | Settle stock bets |
 
 ---
@@ -344,11 +397,27 @@ news_items       external_id (sha1 dedup), ticker, market (US/TW/MARKET),
 
 news_pcr_snapshots  news_item_id→news_items, ticker, snapshot_at,
                     put_volume, call_volume, pcr, pcr_label
+
+weekly_signals      ticker, week_ending, return_pct, signal_type (buy/sell),
+                    last_price, pcr, pcr_label, put_volume, call_volume,
+                    executed, order_side, order_qty
+                    [unique: ticker + week_ending]
+
+options_iv_snapshots  ticker, snapshot_at, avg_iv
+                      (accumulates daily; used for IV Rank computation)
+
+options_signals     ticker, snapshot_at, price, price_change_1d, rsi_14,
+                    pcr, pcr_label, put_volume, call_volume,
+                    avg_iv, iv_rank (null until 30+ snapshots), total_oi,
+                    volume_oi_ratio, signal_type, signal_score, signal_reason
+                    [unique: ticker + snapshot_at (15-min bucket)]
 ```
 
 Migrations managed by Alembic:
-- `alembic/versions/0001_initial_schema.py` — base tables
-- `alembic/versions/0002_news_and_pcr.py` — news + PCR tables
+- `alembic/versions/0001_initial_schema.py` — base 7 tables
+- `alembic/versions/0002_news_and_pcr.py` — news_items + news_pcr_snapshots
+- `alembic/versions/0003_weekly_signals.py` — weekly_signals
+- `alembic/versions/0004_options_signals.py` — options_signals + options_iv_snapshots
 
 ---
 
@@ -394,6 +463,8 @@ ORACLE_API_URL=http://localhost:8000 npm run dev
 
 **Pages:**
 - `/news` — Two-pane layout: news list with PCR bars (left) + PCR timeline chart + related news (right)
+- `/weekly` — Two-pane: ±5% contrarian signals (left) + PCR bar + history table (right)
+- `/options` — VIX overview bar + filter pills (signal type, RSI zone) + signal list with RSI meter + IV Rank badge + dual-axis RSI/PCR Recharts chart (right pane)
 - `/subscribe` — Telegram subscription page with FAQ and benefit cards
 
 **Build for production:**
@@ -410,6 +481,7 @@ The web dashboard is deployed to Cloud Run as `oracle-web` and proxies all `/api
 | Command | What it does |
 |---------|-------------|
 | Send a 4-digit code | Fundamentals + AI target price for any Taiwan stock |
+| `/options` | Top 5 US options signals (RSI + PCR + IV Rank) from latest screener run |
 | `/balance` | Cash + net value across connected brokers |
 | `/positions` | Open holdings |
 | `/orders [days]` | Recent order history (default: 7 days) |
@@ -445,11 +517,13 @@ stock_analysis/
 │       ├── oracle.py              GET  /api/oracle/{today,history,stats,live}
 │       ├── signals.py             GET  /api/signals/{tw,us,search}  ← GCS cached
 │       ├── news.py                GET  /api/news/{feed,pcr-history,related}
+│       ├── weekly.py              GET  /api/weekly/signals + /{ticker}/history
+│       ├── options.py             GET  /api/options/{screener,overview} + /{ticker}/history
 │       ├── agents.py              GET  /api/agents/{analyze,batch}  ← Claude AI
 │       ├── sandbox.py             GET/POST /api/sandbox/  (betting game)
 │       ├── watchlist.py           CRUD /api/watchlist + /api/watchlist/alerts
 │       ├── feed.py                GET/POST /api/feed + reactions
-│       ├── notify.py              POST /api/notify/broadcast (internal)
+│       ├── notify.py              POST /api/notify/broadcast (morning/result/options_signals)
 │       ├── stocks.py              POST /api/stocks/settle (internal)
 │       └── subscribe.py           Telegram subscription page + API
 │
@@ -467,8 +541,14 @@ stock_analysis/
 │   └── utils.py                   TWSE fetchers, VADER sentiment
 │
 ├── us/                          US signal pipeline (S&P 500)
-│   ├── core.py                    USStockEngine — yfinance download
+│   ├── core.py                    USStockEngine — yfinance download + S&P 500 tickers
+│   ├── finviz_data.py             Finviz screener wrapper (unusual vol, movers)
 │   └── us_trending.py             Same filters as TW
+│
+├── options/                     US options screener package
+│   ├── universe.py                get_options_universe() — Finviz + weekly + S&P 500 pre-filter
+│   ├── fetcher.py                 fetch_options_metrics() — RSI, PCR, IV, OI per ticker
+│   └── signals.py                 classify_signal() — buy/sell/unusual + 0-10 score
 │
 ├── ai/                          AI analysis layer (Claude)
 │   ├── agents.py                  6-agent + orchestrator (Haiku + Sonnet)
@@ -483,13 +563,18 @@ stock_analysis/
 ├── alembic/                     DB migrations
 │   └── versions/
 │       ├── 0001_initial_schema.py   Base 7 tables
-│       └── 0002_news_and_pcr.py     news_items + news_pcr_snapshots
+│       ├── 0002_news_and_pcr.py     news_items + news_pcr_snapshots
+│       ├── 0003_weekly_signals.py   weekly_signals
+│       └── 0004_options_signals.py  options_signals + options_iv_snapshots
 │
 ├── web/                         Next.js web dashboard
 │   ├── app/news/                  Two-pane PCR dashboard
+│   ├── app/weekly/                Weekly ±5% contrarian signals + history table
+│   ├── app/options/               Options screener — VIX bar, RSI+PCR chart, IV Rank
 │   ├── app/subscribe/             Telegram subscription page
-│   ├── components/                PcrChart, PcrBar, NewsCard, NewsFeed, etc.
-│   ├── lib/api.ts                 fetch wrappers for /api/news/*
+│   ├── components/                PcrChart, PcrBar, NewsCard, PcrLabel, etc.
+│   ├── lib/api.ts                 fetch wrappers (news, weekly, options)
+│   ├── lib/types.ts               TypeScript interfaces for all API responses
 │   └── Dockerfile.web             Multi-stage Node 20 build
 │
 ├── mobile/                      iOS app (Expo Router)
@@ -509,7 +594,11 @@ stock_analysis/
 │                                  --step predict  (08:00 TST)
 │                                  --step resolve  (14:05 TST)
 ├── news_pipeline.py             News + PCR poller (every 30 min market hours)
-├── app.py                       Interactive Telegram bot (always-on)
+├── weekly_signal_pipeline.py    Monday contrarian trades — buy dip / sell rip
+├── options_screener_pipeline.py Daily options screener (09:45 + 15:30 ET)
+│                                  OPTIONS_DRY_RUN=true/false gates notifications
+├── options_backtester.py        Validate RSI+PCR win rate vs WeeklySignal history
+├── app.py                       Interactive Telegram bot — /options command added
 ├── backtester.py                Mean-reversion backtest engine
 │
 ├── Dockerfile                   Full pipeline image (Playwright, brokers)
@@ -520,9 +609,12 @@ stock_analysis/
 ├── cloudbuild.yaml              CI/CD: 14 steps — build/push/deploy all services
 ├── cloud-run-service.yaml       oracle-api service spec
 ├── cloud-run-telegram.yaml      oracle-telegram-bot service spec (min 1 instance)
-├── cloud-run-job-predict.yaml   oracle-predict Cloud Run Job spec
-├── cloud-run-job-resolve.yaml   oracle-resolve Cloud Run Job spec
-└── cloud-run-job-news.yaml      oracle-news-poller Cloud Run Job spec
+├── cloud-run-job-predict.yaml           oracle-predict Cloud Run Job spec
+├── cloud-run-job-resolve.yaml           oracle-resolve Cloud Run Job spec
+├── cloud-run-job-news.yaml              oracle-news-poller Cloud Run Job spec
+├── cloud-run-job-weekly.yaml            oracle-weekly-signals Cloud Run Job spec
+└── cloud-run-job-options-screener.yaml  oracle-options-screener Cloud Run Job spec
+                                           (includes Cloud Scheduler gcloud commands)
 ```
 
 ---
@@ -536,8 +628,10 @@ stock_analysis/
 - [x] FastAPI backend on GCP Cloud Run + Cloud SQL
 - [x] GCP Cloud Scheduler cron jobs (predict + resolve)
 - [x] News feed with put/call ratio — 12h rolling, PCR timeline, cross-related news
-- [x] Next.js web dashboard — two-pane PCR chart view
+- [x] Next.js web dashboard — news/weekly/options pages
 - [x] Telegram subscription page with FAQ + subscriber count
-- [ ] US pipeline auto-scheduled on Cloud Scheduler
+- [x] US weekly contrarian pipeline — ±5% movers, $5 trades, broker integration
+- [x] US options screener — RSI + PCR + IV Rank + unusual flow, twice daily, push delivery
+- [ ] IV Rank becomes fully accurate after 30 trading days of snapshot accumulation
 - [ ] LSTM / Transformer deep-learning price prediction
 - [ ] App Store release
