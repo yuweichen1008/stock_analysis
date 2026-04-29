@@ -247,12 +247,12 @@ gcloud secrets versions add GOOGLE_CLIENT_ID   --data-file=- <<< 'your-google-cl
 gcloud builds submit --config cloudbuild.yaml
 ```
 
-Cloud Build runs 14 steps automatically:
+Cloud Build runs 16 steps automatically:
 1. Build slim API Docker image (`Dockerfile.api`)
 2. Build full pipeline Docker image (`Dockerfile`)
 3–4. Push both images to Artifact Registry
 5. Deploy Alembic migration job
-6. Run the migration (creates all 9 tables in Cloud SQL)
+6. Run the migration (creates all tables in Cloud SQL)
 7. Deploy `oracle-api` Cloud Run service
 8. Deploy `oracle-telegram-bot` Cloud Run service
 9. Deploy `oracle-predict` Cloud Run Job
@@ -261,6 +261,8 @@ Cloud Build runs 14 steps automatically:
 12. Push web image to Artifact Registry
 13. Deploy `oracle-web` Cloud Run service
 14. Deploy `oracle-news-poller` Cloud Run Job
+15. Deploy `oracle-weekly-signals` Cloud Run Job
+16. Deploy `oracle-options-screener` Cloud Run Job
 
 ### Step 4 — Post-deploy secrets
 
@@ -269,31 +271,41 @@ Cloud Build runs 14 steps automatically:
 gcloud run services describe oracle-api --region=us-central1 --format='value(status.url)'
 # → https://oracle-api-xxxx-uc.a.run.app
 
-# Set for pipeline callouts
+# Update both secrets so pipelines + web dashboard point at the real API
 gcloud secrets versions add ORACLE_API_BASE --data-file=- <<< 'https://oracle-api-xxxx-uc.a.run.app'
-
-# Set for web dashboard proxy
 gcloud secrets versions add ORACLE_API_URL  --data-file=- <<< 'https://oracle-api-xxxx-uc.a.run.app'
 ```
 
-### Step 5 — Add Cloud Scheduler jobs for the news poller
+> All Cloud Scheduler jobs (predict, resolve, news poller ×2, weekly signals, options screener ×2) are created automatically by `setup-gcp.sh`. No manual scheduler setup needed.
 
+### Step 5 — First-time DB seeding
+
+After the first deployment the database tables are empty — web pages will show a "no signals yet" empty state until a pipeline run has populated them. You have two options:
+
+**Option A — trigger Cloud Run jobs immediately:**
 ```bash
-# TW market hours (09:00–13:30 TST = 01:00–06:00 UTC)
-gcloud scheduler jobs create http oracle-news-tw \
-  --location=us-central1 \
-  --schedule="*/30 1-6 * * 1-5" \
-  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/YOUR_PROJECT_ID/jobs/oracle-news-poller:run" \
-  --http-method=POST \
-  --oauth-service-account-email=oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+# Options screener (safe — OPTIONS_DRY_RUN=false only sends iOS/Telegram notifications)
+gcloud run jobs execute oracle-options-screener --region=us-central1 --wait
 
-# US market hours (09:30–17:00 ET = 13:00–21:00 UTC)
-gcloud scheduler jobs create http oracle-news-us \
-  --location=us-central1 \
-  --schedule="*/30 13-21 * * 1-5" \
-  --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/YOUR_PROJECT_ID/jobs/oracle-news-poller:run" \
-  --http-method=POST \
-  --oauth-service-account-email=oracle-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+# Weekly contrarian signals (safe — WEEKLY_DRY_RUN=false only submits real broker trades)
+gcloud run jobs execute oracle-weekly-signals --region=us-central1 --wait
+
+# News + PCR
+gcloud run jobs execute oracle-news-poller --region=us-central1 --wait
+```
+
+**Option B — seed locally (no cloud needed):**
+```bash
+# Copy your prod DATABASE_URL to .env, then:
+OPTIONS_DRY_RUN=true python options_screener_pipeline.py
+WEEKLY_DRY_RUN=true python weekly_signal_pipeline.py
+python news_pipeline.py
+```
+
+Verify the DB is seeded:
+```bash
+curl https://oracle-api-xxxx-uc.a.run.app/api/options/db-status
+# → {"seeded": true, "options_signals": 42, ...}
 ```
 
 ### Step 6 — Test everything
@@ -365,6 +377,7 @@ The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-
 | `GET /api/options/screener` | — | Latest options signals (RSI+PCR+IV Rank, 5-min cache) |
 | `GET /api/options/screener/{ticker}/history` | — | 30-day options signal history for one ticker |
 | `GET /api/options/overview` | — | VIX, market PCR, buy/sell/unusual counts, top 3 signals |
+| `GET /api/options/db-status` | — | Row counts for options tables — detect empty/unseeded DB |
 | `GET /subscribe` | — | Telegram subscription web page |
 | `POST /api/subscribe` | — | Subscribe Telegram chat ID |
 | `POST /api/sandbox/settle` | X-API-Secret | Settle bets (called by pipeline) |
@@ -616,6 +629,51 @@ stock_analysis/
 └── cloud-run-job-options-screener.yaml  oracle-options-screener Cloud Run Job spec
                                            (includes Cloud Scheduler gcloud commands)
 ```
+
+---
+
+## Claude Code MCP Integration
+
+Oracle ships an MCP server that connects Claude Code to the Oracle API (and optionally TradingView Desktop).
+
+### Setup
+
+```bash
+cd mcp
+npm install
+```
+
+The `.claude/mcp.json` file in this repo registers it automatically when you open the project in Claude Code. Verify it's loaded:
+
+```
+/mcp
+```
+
+You should see `oracle` listed with status `connected`. No Oracle API running? Start it first:
+
+```bash
+docker compose up api postgres
+```
+
+### Available tools
+
+**Oracle tools** (work without TradingView):
+- `oracle_options_screener` — latest RSI+PCR+IV Rank signals scored 0-10
+- `oracle_options_overview` — VIX, market PCR, signal counts
+- `oracle_options_history` — 30-day signal history for one ticker
+- `oracle_weekly_signals` — weekly ±5% contrarian signals
+- `oracle_news_feed` — news + PCR sentiment feed
+- `oracle_signal_search` — search TW/US signal stocks
+- `oracle_backtest_results` — RSI+PCR win rate backtest
+- `oracle_prediction` — today's TAIEX Oracle prediction + stats
+
+**TradingView tools** (requires TV Desktop with `--remote-debugging-port=9222`):
+- `chart_get_state`, `chart_set_symbol`, `chart_set_timeframe`, `chart_set_type`
+- `chart_manage_indicator`, `chart_get_visible_range`, `chart_scroll_to_date`
+- `pine_get_source`, `pine_set_source`, `pine_compile`, `pine_get_errors`
+- `capture_screenshot`
+
+See [mcp/SETUP.md](mcp/SETUP.md) for TradingView launch flags and security notes.
 
 ---
 

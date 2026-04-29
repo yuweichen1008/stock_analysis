@@ -189,6 +189,18 @@ steps:
       - cloud-run-job-weekly.yaml
       - --region=${_REGION}
 
+  # ── 16. Deploy options screener Cloud Run Job ─────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-job-options-screener
+    waitFor: [push-pipeline]
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - replace
+      - cloud-run-job-options-screener.yaml
+      - --region=${_REGION}
+
 substitutions:
   _REGION: us-central1
 

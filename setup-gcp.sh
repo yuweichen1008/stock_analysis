@@ -134,9 +134,12 @@ for SECRET in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID GOOGLE_CLIENT_ID ANTHROPIC_API
   printf 'PLACEHOLDER' | gcloud secrets versions add "$SECRET" --data-file=- 2>/dev/null || true
 done
 
+_create_secret "ORACLE_API_URL"   "https://oracle-api-PLACEHOLDER.a.run.app"
+_create_secret "OPTIONS_DRY_RUN"  "false"
+
 # ── 8. Update YAML files with real PROJECT_ID ──────────────────────────────────
 echo "📝 Patching YOUR_PROJECT_ID in YAML files..."
-for FILE in cloud-run-service.yaml cloud-run-telegram.yaml cloud-run-job-predict.yaml cloud-run-job-resolve.yaml cloud-run-job-news.yaml cloud-run-job-weekly.yaml; do
+for FILE in cloud-run-service.yaml cloud-run-telegram.yaml cloud-run-job-predict.yaml cloud-run-job-resolve.yaml cloud-run-job-news.yaml cloud-run-job-weekly.yaml cloud-run-job-options-screener.yaml; do
   if [[ -f "$FILE" ]]; then
     sed -i.bak "s/YOUR_PROJECT_ID/${PROJECT_ID}/g" "$FILE"
     rm -f "${FILE}.bak"
@@ -206,6 +209,26 @@ gcloud scheduler jobs create http oracle-weekly-signals \
   --description="Weekly ±5% contrarian signals every Monday 10:30 ET" 2>/dev/null || \
   echo "  oracle-weekly-signals scheduler job already exists"
 
+gcloud scheduler jobs create http oracle-options-screener-morning \
+  --location="$REGION" \
+  --schedule="45 14 * * 1-5" \
+  --time-zone="UTC" \
+  --uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/oracle-options-screener:run" \
+  --message-body='{}' \
+  --oauth-service-account-email="$SCHEDULER_SA" \
+  --description="Options screener 09:45 ET (14:45 UTC) weekdays" 2>/dev/null || \
+  echo "  oracle-options-screener-morning scheduler job already exists"
+
+gcloud scheduler jobs create http oracle-options-screener-close \
+  --location="$REGION" \
+  --schedule="30 20 * * 1-5" \
+  --time-zone="UTC" \
+  --uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/oracle-options-screener:run" \
+  --message-body='{}' \
+  --oauth-service-account-email="$SCHEDULER_SA" \
+  --description="Options screener 15:30 ET (20:30 UTC) weekdays" 2>/dev/null || \
+  echo "  oracle-options-screener-close scheduler job already exists"
+
 # ── Done ───────────────────────────────────────────────────────────────────────
 echo ""
 echo "✅ GCP setup complete!"
@@ -224,10 +247,11 @@ echo "  gcloud secrets versions add APPLE_TEAM_ID      --data-file=- <<< 'your-t
 echo "  gcloud secrets versions add APPLE_CLIENT_ID    --data-file=- <<< 'com.yourco.oracle'"
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "  AFTER FIRST DEPLOYMENT — update ORACLE_API_BASE:"
+echo "  AFTER FIRST DEPLOYMENT — update ORACLE_API_BASE + ORACLE_API_URL:"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 echo "  gcloud secrets versions add ORACLE_API_BASE --data-file=- <<< 'https://oracle-api-xxxx-uc.a.run.app'"
+echo "  gcloud secrets versions add ORACLE_API_URL   --data-file=- <<< 'https://oracle-api-xxxx-uc.a.run.app'"
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  DEPLOY:"

@@ -343,8 +343,25 @@ export default function OptionsPage() {
             {loading && (
               <p className="text-[#8888aa] text-sm text-center p-8">Loading…</p>
             )}
-            {!loading && filtered.length === 0 && (
-              <p className="text-[#555570] text-sm text-center p-8">No signals found</p>
+            {!loading && data?.count === 0 && (
+              <div className="flex flex-col items-center justify-center gap-4 text-center px-6 py-10">
+                <div className="text-4xl">📊</div>
+                <p className="text-white font-bold text-sm">No options signals yet</p>
+                <p className="text-[#8888aa] text-xs max-w-[220px]">
+                  The screener hasn&apos;t run yet. Seed the DB locally:
+                </p>
+                <code className="bg-[#0d0d14] text-[#00e676] text-xs px-3 py-2 rounded border border-[#2e2e50] font-mono text-left leading-5">
+                  OPTIONS_DRY_RUN=true{"\n"}python options_screener_pipeline.py
+                </code>
+                <p className="text-[#555570] text-xs">
+                  Or wait for the 09:45 AM / 3:30 PM ET cron.
+                </p>
+              </div>
+            )}
+            {!loading && data != null && data.count > 0 && filtered.length === 0 && (
+              <p className="text-[#555570] text-xs text-center p-8">
+                No signals match the current filter
+              </p>
             )}
             {filtered.map((s) => (
               <SignalListRow

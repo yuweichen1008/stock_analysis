@@ -5,6 +5,7 @@ Endpoints:
   GET /api/options/screener                    — latest options signals (filtered)
   GET /api/options/screener/{ticker}/history   — signal history for one ticker
   GET /api/options/overview                    — market-wide summary (VIX, PCR, breadth)
+  GET /api/options/db-status                   — row counts to detect empty/unseeded DB
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from api.db import OptionsSignal, get_db
+from api.db import OptionsIvSnapshot, OptionsSignal, get_db
 
 router = APIRouter(prefix="/api/options", tags=["options"])
 
@@ -205,3 +206,17 @@ def get_options_overview(db: Session = Depends(get_db)):
     _cache_overview["data"] = result
     _cache_overview["ts"]   = now
     return result
+
+
+@router.get("/db-status")
+def get_db_status(db: Session = Depends(get_db)):
+    """Row counts for both options tables — lets the web detect an empty/unseeded DB."""
+    signals_count = db.query(func.count(OptionsSignal.id)).scalar() or 0
+    iv_count      = db.query(func.count(OptionsIvSnapshot.id)).scalar() or 0
+    latest        = db.query(func.max(OptionsSignal.snapshot_at)).scalar()
+    return {
+        "options_signals":  signals_count,
+        "iv_snapshots":     iv_count,
+        "latest_snapshot":  latest.isoformat() if latest else None,
+        "seeded":           signals_count > 0,
+    }

@@ -1,4 +1,4 @@
-import type { NewsItem, PcrHistoryResponse, RelatedResponse, WeeklySignalsResponse, WeeklyHistoryResponse, OptionsScreenerResponse, OptionsHistoryResponse, OptionsOverview } from "./types";
+import type { NewsItem, PcrHistoryResponse, RelatedResponse, WeeklySignalsResponse, WeeklyHistoryResponse, OptionsScreenerResponse, OptionsHistoryResponse, OptionsOverview, DbStatus } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
@@ -79,3 +79,6 @@ export const optionsHistory = (ticker: string): Promise<OptionsHistoryResponse> 
 
 export const optionsOverview = (): Promise<OptionsOverview> =>
   get("/api/options/overview");
+
+export const optionsDbStatus = (): Promise<DbStatus> =>
+  get("/api/options/db-status");

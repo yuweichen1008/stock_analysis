@@ -106,3 +106,10 @@ export interface OptionsOverview {
   top_signals:   OptionsSignalItem[];
   snapshot_at:   string | null;
 }
+
+export interface DbStatus {
+  options_signals:  number;
+  iv_snapshots:     number;
+  latest_snapshot:  string | null;
+  seeded:           boolean;
+}
