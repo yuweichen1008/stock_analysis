@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "oracle": {
+      "command": "node",
+      "args": ["mcp/server.js"],
+      "env": {
+        "ORACLE_API_BASE": "http://localhost:8000",
+        "TV_CDP_PORT": "9222"
+      }
+    }
+  }
+}

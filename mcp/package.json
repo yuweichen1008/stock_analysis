@@ -1,0 +1,17 @@
+{
+  "name": "oracle-mcp",
+  "version": "1.0.0",
+  "description": "Oracle MCP — TradingView chart bridge + Oracle signal tools for Claude Code",
+  "type": "module",
+  "main": "server.js",
+  "bin": { "oracle-mcp": "server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "chrome-remote-interface": "^0.33.2",
+    "zod": "^3.22.4"
+  }
+}
