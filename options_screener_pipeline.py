@@ -11,6 +11,7 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -128,10 +129,19 @@ def main() -> None:
     logging.info("Universe: %d tickers", len(tickers))
 
     inserted = skipped = signalled = 0
+    fetch_errors: list[str] = []
     written_signals: list[dict] = []
 
     for i, ticker in enumerate(tickers):
-        metrics = fetch_options_metrics(ticker, db, snapshot_at)
+        try:
+            metrics = fetch_options_metrics(ticker, db, snapshot_at)
+        except Exception as exc:
+            logging.warning("Fetch failed for %s: %s", ticker, exc)
+            fetch_errors.append(ticker)
+            skipped += 1
+            time.sleep(0.3)
+            continue
+
         if metrics is None:
             skipped += 1
             if i % 20 == 0:
@@ -192,10 +202,23 @@ def main() -> None:
     db.commit()
     db.close()
 
+    if fetch_errors:
+        logging.info("Fetch errors for %d tickers: %s", len(fetch_errors), fetch_errors)
+
     logging.info(
         "Done — %d signals written, %d tickers skipped (dry_run=%s)",
         inserted, skipped, DRY_RUN,
     )
+
+    # Emit a structured error that Cloud Logging → Cloud Monitoring can alert on.
+    # Filter: severity=ERROR AND jsonPayload.message="options_screener_zero_signals"
+    if signalled == 0 and not DRY_RUN:
+        logging.error(json.dumps({
+            "severity":      "ERROR",
+            "message":       "options_screener_zero_signals",
+            "ticker_count":  len(tickers),
+            "fetch_errors":  len(fetch_errors),
+        }))
 
     if not DRY_RUN and written_signals:
         top = sorted(written_signals, key=lambda x: x["signal_score"], reverse=True)

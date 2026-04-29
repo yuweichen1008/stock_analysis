@@ -23,6 +23,8 @@
  *   Pine Script:     pine_get_source, pine_set_source, pine_compile, pine_get_errors,
  *                    pine_check (disabled by default — set ORACLE_MCP_PINE_CHECK=1)
  *   Screenshots:     capture_screenshot
+ *   Data/alerts:     data_get_ohlcv, data_get_indicator, indicator_set_inputs,
+ *                    symbol_info, alert_create, alert_list, pine_save, pine_get_console
  *   Oracle signals:  oracle_options_screener, oracle_options_overview,
  *                    oracle_options_history, oracle_weekly_signals, oracle_news_feed,
  *                    oracle_signal_search, oracle_backtest_results, oracle_prediction
@@ -50,6 +52,7 @@ import { registerChartTools  } from './tools/chart.js';
 import { registerPineTools   } from './tools/pine.js';
 import { registerCaptureTools} from './tools/capture.js';
 import { registerOracleTools } from './tools/oracle.js';
+import { registerDataTools   } from './tools/data.js';
 
 process.stderr.write(
   '⚠  Oracle MCP Server\n' +
@@ -86,6 +89,14 @@ TRADINGVIEW TOOLS (requires TV Desktop with CDP on port 9222):
 - chart_manage_indicator    → add/remove study
 - chart_get_visible_range   → current visible date range
 - chart_scroll_to_date      → jump to date
+- data_get_ohlcv         → OHLCV bars from visible chart
+- data_get_indicator     → study plot values from Data Window
+- indicator_set_inputs   → change indicator parameters
+- symbol_info            → ticker metadata (exchange, type, currency)
+- alert_create           → create price alert on current symbol
+- alert_list             → list active price alerts
+- pine_save              → save Pine Script to TradingView account
+- pine_get_console       → read Pine Script console log output
 - pine_get_source           → get current Pine Script
 - pine_set_source           → inject Pine Script (warns on request.* network calls)
 - pine_compile              → compile and add to chart
@@ -105,6 +116,7 @@ registerOracleTools(server);   // Oracle API tools (always available)
 registerChartTools(server);    // TradingView CDP chart control
 registerPineTools(server);     // Pine Script editing
 registerCaptureTools(server);  // Screenshots
+registerDataTools(server);     // OHLCV data, indicator values, alerts, Pine console
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

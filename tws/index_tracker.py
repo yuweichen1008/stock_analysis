@@ -35,11 +35,15 @@ SCORE_WIN  =  100   # points for a correct prediction
 SCORE_LOSE =  -50   # points for a wrong prediction
 
 _FACTOR_WEIGHTS = {
-    "spx_overnight":  0.30,
-    "taiex_momentum": 0.25,
-    "vix_fear":       0.20,
-    "signal_count":   0.15,
-    "tw_win_rate":    0.10,
+    # Overnight US session — tech-heavy weights because TAIEX ~60% tech
+    "sox_overnight":   0.25,   # Philadelphia Semiconductor Index (SOXX proxy)
+    "spx_overnight":   0.20,   # S&P 500 broad market
+    "ndx_overnight":   0.15,   # Nasdaq 100 (QQQ) tech sentiment
+    # Local / structural
+    "taiex_momentum":  0.15,   # TAIEX prev-day direction
+    "vix_direction":   0.10,   # VIX falling = risk-on (direction > level)
+    "usdtwd_fx":       0.10,   # USD/TWD: stronger USD → foreign selling of TAIEX
+    "signal_count":    0.05,   # TW mean-reversion signal breadth
 }
 
 
@@ -176,7 +180,20 @@ def compute_prediction(base_dir: str) -> dict:
     factors: dict = {}
     bull_score = 0.0
 
-    # ── Factor 1: SPX overnight return (weight 0.30) ─────────────────────────
+    # ── Factor 1: SOX overnight return (weight 0.25) ─────────────────────────
+    # Philadelphia Semiconductor Index — strongest single predictor of TAIEX
+    # because TSMC + semiconductor stocks are ~60% of the index.
+    sox_closes = _fetch_yf_close("SOXX", period="5d", interval="1d")   # iShares SOXX ETF
+    if len(sox_closes) >= 2:
+        sox_ret = (sox_closes[-1] - sox_closes[-2]) / sox_closes[-2] * 100
+        sox_bull = sox_ret > 0.2
+        factors["sox_overnight"] = {"value": round(sox_ret, 2), "bull": sox_bull}
+        if sox_bull:
+            bull_score += _FACTOR_WEIGHTS["sox_overnight"]
+    else:
+        factors["sox_overnight"] = {"value": None, "bull": False}
+
+    # ── Factor 2: SPX overnight return (weight 0.20) ─────────────────────────
     spx_closes = _fetch_yf_close("^GSPC", period="5d", interval="1d")
     if len(spx_closes) >= 2:
         spx_ret = (spx_closes[-1] - spx_closes[-2]) / spx_closes[-2] * 100
@@ -187,7 +204,18 @@ def compute_prediction(base_dir: str) -> dict:
     else:
         factors["spx_overnight"] = {"value": None, "bull": False}
 
-    # ── Factor 2: TAIEX prev-day momentum (weight 0.25) ──────────────────────
+    # ── Factor 3: Nasdaq 100 overnight return (weight 0.15) ──────────────────
+    ndx_closes = _fetch_yf_close("QQQ", period="5d", interval="1d")
+    if len(ndx_closes) >= 2:
+        ndx_ret = (ndx_closes[-1] - ndx_closes[-2]) / ndx_closes[-2] * 100
+        ndx_bull = ndx_ret > 0.2
+        factors["ndx_overnight"] = {"value": round(ndx_ret, 2), "bull": ndx_bull}
+        if ndx_bull:
+            bull_score += _FACTOR_WEIGHTS["ndx_overnight"]
+    else:
+        factors["ndx_overnight"] = {"value": None, "bull": False}
+
+    # ── Factor 4: TAIEX prev-day momentum (weight 0.15) ──────────────────────
     twii_closes = _fetch_yf_close("^TWII", period="5d", interval="1d")
     if len(twii_closes) >= 2:
         tw_mom = (twii_closes[-1] - twii_closes[-2]) / twii_closes[-2] * 100
@@ -198,18 +226,39 @@ def compute_prediction(base_dir: str) -> dict:
     else:
         factors["taiex_momentum"] = {"value": None, "bull": False}
 
-    # ── Factor 3: VIX fear gauge (weight 0.20) ────────────────────────────────
+    # ── Factor 5: VIX direction (weight 0.10) ────────────────────────────────
+    # Direction beats level: falling VIX = risk-on regardless of absolute value.
     vix_closes = _fetch_yf_close("^VIX", period="5d", interval="1d")
-    if vix_closes:
-        vix = vix_closes[-1]
-        vix_bull = vix < 20
-        factors["vix_fear"] = {"value": round(vix, 1), "bull": vix_bull}
+    if len(vix_closes) >= 2:
+        vix_now  = vix_closes[-1]
+        vix_prev = vix_closes[-2]
+        vix_fall = vix_now < vix_prev          # falling = risk-on
+        vix_low  = vix_now < 20               # absolute calm
+        vix_bull = vix_fall or vix_low
+        factors["vix_direction"] = {
+            "value": round(vix_now, 1),
+            "change": round(vix_now - vix_prev, 2),
+            "bull": vix_bull,
+        }
         if vix_bull:
-            bull_score += _FACTOR_WEIGHTS["vix_fear"]
+            bull_score += _FACTOR_WEIGHTS["vix_direction"]
     else:
-        factors["vix_fear"] = {"value": None, "bull": False}
+        factors["vix_direction"] = {"value": None, "bull": False}
 
-    # ── Factor 4: TW mean-reversion signal count (weight 0.15) ───────────────
+    # ── Factor 6: USD/TWD exchange rate (weight 0.10) ────────────────────────
+    # Stronger USD (rising USDTWD) means foreign selling pressure on TAIEX.
+    # Bull if TWD is stable or strengthening (USDTWD falling or flat).
+    usdtwd_closes = _fetch_yf_close("TWD=X", period="5d", interval="1d")
+    if len(usdtwd_closes) >= 2:
+        fx_change = (usdtwd_closes[-1] - usdtwd_closes[-2]) / usdtwd_closes[-2] * 100
+        fx_bull = fx_change < 0.2   # USD not strengthening materially
+        factors["usdtwd_fx"] = {"value": round(usdtwd_closes[-1], 3), "change_pct": round(fx_change, 3), "bull": fx_bull}
+        if fx_bull:
+            bull_score += _FACTOR_WEIGHTS["usdtwd_fx"]
+    else:
+        factors["usdtwd_fx"] = {"value": None, "bull": True}  # default bull if unavailable
+
+    # ── Factor 7: TW mean-reversion signal count (weight 0.05) ───────────────
     sig_count = 0
     try:
         trending_file = os.path.join(base_dir, "current_trending.csv")
@@ -225,23 +274,6 @@ def compute_prediction(base_dir: str) -> dict:
     factors["signal_count"] = {"value": sig_count, "bull": sig_bull}
     if sig_bull:
         bull_score += _FACTOR_WEIGHTS["signal_count"]
-
-    # ── Factor 5: Recent TW open-day win rate (weight 0.10) ──────────────────
-    tw_wr = 0.0
-    try:
-        hist_file = os.path.join(base_dir, "data", "predictions", "prediction_history.csv")
-        if os.path.exists(hist_file):
-            ph = pd.read_csv(hist_file)
-            ph_tw = ph[(ph["market"] == "TW") & (ph["status"] == "resolved")]
-            if len(ph_tw) >= 5:
-                recent = ph_tw.sort_values("signal_date").tail(20)
-                tw_wr  = float(recent["win_open"].mean() * 100)
-    except Exception:
-        pass
-    wr_bull = tw_wr > 55
-    factors["tw_win_rate"] = {"value": round(tw_wr, 1), "bull": wr_bull}
-    if wr_bull:
-        bull_score += _FACTOR_WEIGHTS["tw_win_rate"]
 
     # ── Final vote ────────────────────────────────────────────────────────────
     direction      = "Bull" if bull_score >= 0.5 else "Bear"
@@ -434,7 +466,13 @@ def backtest_oracle(
     summary    : dict — aggregate stats
     """
     if weights is None:
-        weights = {"spx_overnight": 0.40, "taiex_momentum": 0.35, "vix_fear": 0.25}
+        weights = {
+            "sox_overnight":  0.30,
+            "spx_overnight":  0.25,
+            "ndx_overnight":  0.20,
+            "taiex_momentum": 0.15,
+            "vix_direction":  0.10,
+        }
 
     total_w = sum(weights.values()) or 1.0
 
@@ -456,6 +494,8 @@ def backtest_oracle(
     twii = _dl("^TWII")
     spx  = _dl("^GSPC")
     vix  = _dl("^VIX")
+    sox  = _dl("SOXX")
+    ndx  = _dl("QQQ")
 
     if twii.empty:
         return pd.DataFrame(), {}
@@ -471,18 +511,30 @@ def backtest_oracle(
             continue
         prev_date = twii.index[twii_pos - 1]
 
-        # ── SPX overnight ────────────────────────────────────────────────────
-        spx_val  = None
-        spx_bull = False
-        if not spx.empty and prev_date in spx.index:
-            spx_pos = spx.index.get_loc(prev_date)
-            if spx_pos >= 1:
-                c0 = float(spx["Close"].iloc[spx_pos - 1])
-                c1 = float(spx["Close"].iloc[spx_pos])
-                spx_val  = round((c1 - c0) / c0 * 100, 2)
-                spx_bull = spx_val > 0.3
+        def _ret(df, date):
+            """Overnight % return into `date` using previous row in df."""
+            if df.empty or date not in df.index:
+                return None
+            pos = df.index.get_loc(date)
+            if pos < 1:
+                return None
+            c0 = float(df["Close"].iloc[pos - 1])
+            c1 = float(df["Close"].iloc[pos])
+            return round((c1 - c0) / c0 * 100, 2)
 
-        # ── TAIEX momentum (prev-day %) ──────────────────────────────────────
+        # ── SOX overnight ─────────────────────────────────────────────────────
+        sox_val  = _ret(sox, prev_date)
+        sox_bull = sox_val is not None and sox_val > 0.2
+
+        # ── SPX overnight ─────────────────────────────────────────────────────
+        spx_val  = _ret(spx, prev_date)
+        spx_bull = spx_val is not None and spx_val > 0.3
+
+        # ── NDX overnight ─────────────────────────────────────────────────────
+        ndx_val  = _ret(ndx, prev_date)
+        ndx_bull = ndx_val is not None and ndx_val > 0.2
+
+        # ── TAIEX momentum (prev-day %) ───────────────────────────────────────
         tw_val  = None
         tw_bull = False
         prev2 = twii.index[twii_pos - 2]
@@ -491,18 +543,25 @@ def backtest_oracle(
         tw_val  = round((c1 - c0) / c0 * 100, 2)
         tw_bull = tw_val > 0.5
 
-        # ── VIX ──────────────────────────────────────────────────────────────
+        # ── VIX direction ─────────────────────────────────────────────────────
         vix_val  = None
         vix_bull = False
         if not vix.empty and prev_date in vix.index:
-            vix_val  = round(float(vix.at[prev_date, "Close"]), 1)
-            vix_bull = vix_val < 20
+            vix_pos = vix.index.get_loc(prev_date)
+            vix_val = round(float(vix["Close"].iloc[vix_pos]), 1)
+            if vix_pos >= 1:
+                vix_prev_val = float(vix["Close"].iloc[vix_pos - 1])
+                vix_bull = (vix_val < vix_prev_val) or (vix_val < 20)
+            else:
+                vix_bull = vix_val < 20
 
-        # ── Vote ─────────────────────────────────────────────────────────────
+        # ── Vote ──────────────────────────────────────────────────────────────
         bull_score = 0.0
-        if spx_bull:  bull_score += weights.get("spx_overnight",  0.40)
-        if tw_bull:   bull_score += weights.get("taiex_momentum", 0.35)
-        if vix_bull:  bull_score += weights.get("vix_fear",       0.25)
+        if sox_bull: bull_score += weights.get("sox_overnight",  0.30)
+        if spx_bull: bull_score += weights.get("spx_overnight",  0.25)
+        if ndx_bull: bull_score += weights.get("ndx_overnight",  0.20)
+        if tw_bull:  bull_score += weights.get("taiex_momentum", 0.15)
+        if vix_bull: bull_score += weights.get("vix_direction",  0.10)
         bull_score /= total_w
 
         direction      = "Bull" if bull_score >= 0.5 else "Bear"
@@ -521,7 +580,9 @@ def backtest_oracle(
             "direction":        direction,
             "actual_dir":       actual_dir,
             "confidence_pct":   confidence_pct,
+            "sox_ret":          sox_val,
             "spx_ret":          spx_val,
+            "ndx_ret":          ndx_val,
             "taiex_mom":        tw_val,
             "vix":              vix_val,
             "taiex_open":       round(taiex_open,  1),

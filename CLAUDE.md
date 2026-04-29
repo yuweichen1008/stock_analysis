@@ -37,10 +37,25 @@ docker compose --profile pipeline up pipeline  # include data pipeline
 
 ### Pipelines (run locally or via Cloud Run jobs)
 ```bash
-WEEKLY_DRY_RUN=true python weekly_signal_pipeline.py   # Monday ±5% movers (dry run)
-python news_pipeline.py                                  # news + PCR poller
-python app.py                                            # Telegram bot
+WEEKLY_DRY_RUN=true python weekly_signal_pipeline.py        # Monday ±5% movers (dry run)
+OPTIONS_DRY_RUN=true python options_screener_pipeline.py    # RSI+PCR+IV screener (dry run)
+python news_pipeline.py                                      # news + PCR poller
+python app.py                                                # Telegram bot
 ```
+
+### Tests
+```bash
+pytest                                  # all Python tests
+pytest tests/test_options_signals.py   # signal logic unit tests only
+cd web && npm test                      # Vitest web helper tests
+```
+
+### MCP Server
+```bash
+cd mcp && npm install
+node mcp/server.js                     # verify it starts
+```
+Add to `.claude/settings.json` mcpServers — see `mcp/server.js` header for config.
 
 ### Cloud Deployment
 ```bash
@@ -73,11 +88,34 @@ There are two signal domains:
 - `weekly_signal_pipeline.py` — BUY stocks down ≥5%, SELL stocks up ≥5% (fade momentum)
 - Executes $5 real trades via broker integrations in `brokers/`; controlled by `WEEKLY_DRY_RUN` env var
 
+**Options Screener (twice daily, market hours):**
+- `options_screener_pipeline.py` — RSI(14) + put/call ratio + IV Rank for ~200 US tickers
+- `options/signals.py` — `classify_signal()`: unusual_activity | buy_signal | sell_signal, scored 0–10
+- `options/fetcher.py` — yfinance options chain + RSI computation
+- Results stored in `options_signals` + `options_iv_snapshots` tables
+- Cloud Run job: `oracle-options-screener` (14:45 UTC / 20:30 UTC weekdays)
+- Controlled by `OPTIONS_DRY_RUN` env var (true = no notifications)
+
 **News + PCR (every 30 min, market hours):**
 - `news/fetcher.py` — Google News RSS for signal tickers
 - `news/pcr.py` — US: real put/call ratio from yfinance options chain; TW: VADER NLP proxy
 - `news/related.py` — Jaccard similarity for related articles
 - Results stored in `news_items` + `news_pcr_snapshots` tables
+
+### MCP Server: `mcp/`
+- `mcp/server.js` — MCP entry point; registers all tool groups
+- `mcp/tools/chart.js` — chart control (symbol, timeframe, type, indicators, scroll)
+- `mcp/tools/pine.js` — Pine Script read/write/compile/errors
+- `mcp/tools/capture.js` — screenshot capture
+- `mcp/tools/data.js` — OHLCV data, indicator values, price alerts, Pine console
+- `mcp/tools/oracle.js` — Oracle API tools (options screener, weekly signals, prediction)
+- Requires TradingView Desktop with `--remote-debugging-port=9222`
+
+### Tests
+- `tests/test_options_signals.py` — 53 unit tests for signal classification logic (no DB/network)
+- `tests/test_options_fetcher.py` — 10 tests for RSI computation
+- `tests/test_options_api.py` — 22 integration tests via FastAPI TestClient + SQLite StaticPool
+- `web/__tests__/helpers.test.ts` — 28 Vitest tests for web helper functions
 
 ### Mobile App: `mobile/`
 - Expo 54 / React Native; tabs: Movers, Signals, Weekly, Backtest, News, Community, Oracle, Profile
@@ -97,9 +135,9 @@ Called from `api/routers/agents.py` via Anthropic Claude API. Used for stock ana
 
 ### Infrastructure
 - **Two Docker images:** `Dockerfile.api` (slim, for API + web services) and `Dockerfile` (full, includes Playwright for scraping, used by pipeline jobs)
-- **Cloud Run Jobs:** `predict`, `resolve`, `oracle-news-poller`, `oracle-weekly-signals`
+- **Cloud Run Jobs:** `predict`, `resolve`, `oracle-news-poller`, `oracle-weekly-signals`, `oracle-options-screener`
 - **Cloud Run Services:** `oracle-api`, `oracle-web`, `oracle-telegram-bot`
-- **`cloudbuild.yaml`** — 15-step build: builds images → runs Alembic migration → deploys all services and jobs
+- **`cloudbuild.yaml`** — 16-step build: builds images → runs Alembic migration → deploys all services and jobs
 - **Migrations:** Alembic; files in `alembic/versions/`; always run `alembic upgrade head` after pulling
 
 ### Key Environment Variables
@@ -110,5 +148,8 @@ INTERNAL_API_SECRET   # for internal Cloud Run job → API calls
 ANTHROPIC_API_KEY     # Claude AI agents
 TELEGRAM_BOT_TOKEN
 WEEKLY_DRY_RUN        # true/false — gates live broker trades
+OPTIONS_DRY_RUN       # true/false — gates push notifications for options signals
+ORACLE_API_BASE       # Oracle API URL (for pipelines + Telegram bot)
+ORACLE_API_URL        # Oracle API URL (for Next.js → API proxy)
 ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD
 ```

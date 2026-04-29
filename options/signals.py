@@ -90,13 +90,16 @@ def classify_signal(metrics: dict) -> tuple[str | None, float, str]:
         signal_type = None
 
     # ── Score ─────────────────────────────────────────────────────────────────
-    score = round(
-        _rsi_score(rsi, signal_type)
-        + _pcr_score(pcr, signal_type)
-        + _iv_score(iv_rank)
-        + _vol_oi_score(vol_oi),
-        2,
-    )
+    if signal_type is None:
+        score = 0.0
+    else:
+        score = round(
+            _rsi_score(rsi, signal_type)
+            + _pcr_score(pcr, signal_type)
+            + _iv_score(iv_rank)
+            + _vol_oi_score(vol_oi),
+            2,
+        )
 
     # ── Reason ────────────────────────────────────────────────────────────────
     parts = []
