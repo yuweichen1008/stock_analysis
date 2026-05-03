@@ -150,7 +150,7 @@ def get_options_overview(db: Session = Depends(get_db)):
     vix = None
     try:
         import yfinance as yf
-        vix_hist = yf.Ticker("^VIX").history(period="2d", progress=False)
+        vix_hist = yf.Ticker("^VIX").history(period="2d")
         if not vix_hist.empty:
             vix = round(float(vix_hist["Close"].iloc[-1]), 2)
     except Exception:

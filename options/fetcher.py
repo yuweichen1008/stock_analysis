@@ -91,7 +91,7 @@ def fetch_options_metrics(ticker: str, db, snapshot_at: datetime) -> dict | None
         t = yf.Ticker(ticker)
 
         # ── Price + RSI ───────────────────────────────────────────────────────
-        hist = t.history(period="30d", auto_adjust=True, progress=False)
+        hist = t.history(period="30d", auto_adjust=True)
         if hist.empty or len(hist) < 2:
             return None
         closes = hist["Close"].dropna()
