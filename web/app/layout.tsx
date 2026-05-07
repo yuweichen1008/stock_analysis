@@ -12,6 +12,7 @@ const NAV = [
   { href: "/news",      label: "📰 News & PCR" },
   { href: "/weekly",    label: "📅 Weekly Signals" },
   { href: "/options",   label: "📈 Options" },
+  { href: "/trading",   label: "📊 Trading" },
   { href: "/subscribe", label: "📬 Subscribe" },
 ];
 

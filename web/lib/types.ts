@@ -113,3 +113,56 @@ export interface DbStatus {
   latest_snapshot:  string | null;
   seeded:           boolean;
 }
+
+// ── Broker / Trading ──────────────────────────────────────────────────────────
+
+export interface BrokerStatus {
+  broker:      string;
+  configured:  boolean;
+  dry_run:     boolean;
+  connected:   boolean;
+}
+
+export interface BrokerBalance {
+  cash:           number;
+  total_value:    number;
+  unrealized_pnl: number;
+  currency:       string;
+}
+
+export interface Position {
+  ticker:    string;
+  qty:       number;
+  avg_cost:  number;
+  mkt_value: number;
+  pnl:       number;
+}
+
+export interface BrokerOrder {
+  date:   string;
+  ticker: string;
+  side:   string;
+  qty:    number;
+  price:  number;
+  status: string;
+}
+
+export interface TradeRow {
+  id:              number;
+  broker:          string;
+  ticker:          string;
+  market:          string;
+  side:            "buy" | "sell";
+  qty:             number;
+  order_type:      string | null;
+  limit_price:     number | null;
+  broker_order_id: string | null;
+  status:          "pending" | "filled" | "cancelled" | "rejected";
+  filled_qty:      number | null;
+  filled_price:    number | null;
+  commission:      number | null;
+  realized_pnl:    number | null;
+  signal_source:   string | null;
+  executed_at:     string | null;
+  created_at:      string;
+}

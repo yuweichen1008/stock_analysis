@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MarketFilter, NewsItem } from "@/lib/types";
+import type { MarketFilter as MarketFilterType, NewsItem } from "@/lib/types";
 import { newsFeed } from "@/lib/api";
 import NewsCard from "./NewsCard";
 import MarketFilter from "./MarketFilter";
@@ -16,14 +16,14 @@ interface Props {
 
 export default function NewsFeed({ selectedId, onSelect }: Props) {
   const [items,    setItems]    = useState<NewsItem[]>([]);
-  const [market,   setMarket]   = useState<MarketFilter>("all");
+  const [market,   setMarket]   = useState<MarketFilterType>("all");
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState<string | null>(null);
   const [offset,   setOffset]   = useState(0);
   const [hasMore,  setHasMore]  = useState(true);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async (reset: boolean, mkt: MarketFilter) => {
+  const load = useCallback(async (reset: boolean, mkt: MarketFilterType) => {
     try {
       if (reset) setLoading(true);
       const off = reset ? 0 : offset;

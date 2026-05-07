@@ -6,8 +6,9 @@ import {
   ActivityIndicator, Alert, FlatList, RefreshControl,
   ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Colors } from '../../constants/colors';
-import { Sandbox, LeaderboardRow } from '../../lib/api';
+import { Sandbox, LeaderboardRow, Broker, BrokerBalance, BrokerPosition } from '../../lib/api';
 import { useAuthStore } from '../../store/auth';
 import ErrorState from '../../components/ErrorState';
 
@@ -20,25 +21,32 @@ interface MeStats {
 
 export default function ProfileScreen() {
   const { user, logout } = useAuthStore();
-  const [me,         setMe]         = useState<MeStats | null>(null);
-  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
-  const [loading,    setLoading]    = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error,      setError]      = useState<string | null>(null);
-  const [notifEnabled, setNotif]    = useState(true);
+  const router = useRouter();
+  const [me,           setMe]           = useState<MeStats | null>(null);
+  const [leaderboard,  setLeaderboard]  = useState<LeaderboardRow[]>([]);
+  const [balance,      setBalance]      = useState<BrokerBalance | null>(null);
+  const [positions,    setPositions]    = useState<BrokerPosition[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [refreshing,   setRefreshing]   = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
+  const [notifEnabled, setNotif]        = useState(true);
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     setError(null);
     try {
-      const [stats, lb] = await Promise.allSettled([
+      const [stats, lb, bal, pos] = await Promise.allSettled([
         Sandbox.me(),
         Sandbox.leaderboard(10),
+        Broker.balance(),
+        Broker.positions(),
       ]);
       if (stats.status === 'fulfilled') setMe(stats.value);
-      if (lb.status === 'fulfilled')    setLeaderboard(lb.value);
-    } catch (e: any) {
-      setError(e?.message ?? '載入失敗');
+      if (lb.status   === 'fulfilled')  setLeaderboard(lb.value);
+      if (bal.status  === 'fulfilled')  setBalance(bal.value);
+      if (pos.status  === 'fulfilled')  setPositions(pos.value);
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? '載入失敗');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -100,6 +108,50 @@ export default function ProfileScreen() {
           <StatPill label="勝率" value={`${(me?.win_rate_pct ?? 0).toFixed(0)}%`} color={me && me.win_rate_pct >= 50 ? Colors.bull : Colors.bear} />
           {rank >= 0 && <StatPill label="排名" value={`#${rank + 1}`} color={Colors.blue} />}
         </View>
+      </View>
+
+      {/* CTBC Portfolio */}
+      <View style={styles.statsCard}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={styles.sectionTitle}>📊 CTBC 帳戶</Text>
+          <TouchableOpacity onPress={() => router.push('/trade-history')}>
+            <Text style={{ fontSize: 12, color: Colors.tabActive }}>交易紀錄 →</Text>
+          </TouchableOpacity>
+        </View>
+        {balance ? (
+          <View style={styles.statsRow}>
+            <StatPill label="可用現金" value={`NT$${Math.round(balance.cash).toLocaleString()}`} color={Colors.gold} />
+            <StatPill label="總資產" value={`NT$${Math.round(balance.total_value).toLocaleString()}`} color={Colors.textPrimary} />
+            <StatPill
+              label="未實現損益"
+              value={`${balance.unrealized_pnl >= 0 ? '+' : ''}${Math.round(balance.unrealized_pnl).toLocaleString()}`}
+              color={balance.unrealized_pnl >= 0 ? Colors.bull : Colors.bear}
+            />
+          </View>
+        ) : (
+          <Text style={{ color: Colors.textMuted, fontSize: 12, marginTop: 8 }}>
+            未設定 CTBC 憑證 — 請設定 CTBC_ID / CTBC_PASSWORD
+          </Text>
+        )}
+        {positions.length > 0 && (
+          <View style={{ marginTop: 12 }}>
+            <Text style={{ color: Colors.textMuted, fontSize: 11, marginBottom: 6 }}>持股明細</Text>
+            {positions.slice(0, 5).map((p, i) => (
+              <View key={i} style={styles.posRow}>
+                <Text style={styles.posTicker}>{p.ticker}</Text>
+                <Text style={styles.posQty}>{p.qty.toLocaleString()}股</Text>
+                <Text style={[styles.posPnl, { color: p.pnl >= 0 ? Colors.bull : Colors.bear }]}>
+                  {p.pnl >= 0 ? '+' : ''}{Math.round(p.pnl).toLocaleString()}
+                </Text>
+              </View>
+            ))}
+            {positions.length > 5 && (
+              <Text style={{ color: Colors.textMuted, fontSize: 11, marginTop: 4, textAlign: 'center' }}>
+                +{positions.length - 5} more
+              </Text>
+            )}
+          </View>
+        )}
       </View>
 
       {/* Leaderboard */}
@@ -178,4 +230,8 @@ const styles = StyleSheet.create({
   logoutText:   { fontSize: 15, fontWeight: '700', color: Colors.bear },
   sectionTitle: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary },
   blue:         { color: '#64b5f6' },
+  posRow:       { flexDirection: 'row', alignItems: 'center', paddingVertical: 5, borderTopWidth: 1, borderTopColor: Colors.border },
+  posTicker:    { width: 48, fontSize: 13, fontWeight: '700', color: Colors.textPrimary },
+  posQty:       { flex: 1, fontSize: 12, color: Colors.textMuted },
+  posPnl:       { fontSize: 13, fontWeight: '700', textAlign: 'right' },
 });

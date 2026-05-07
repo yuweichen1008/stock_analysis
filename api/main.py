@@ -18,6 +18,7 @@ from api.routers import feed as feed_router
 from api.routers import news as news_router
 from api.routers import weekly as weekly_router
 from api.routers import options as options_router
+from api.routers import broker as broker_router
 
 
 def _get_real_ip(request: Request) -> str:
@@ -64,6 +65,7 @@ app.include_router(graph.router)
 app.include_router(news_router.router)
 app.include_router(weekly_router.router)
 app.include_router(options_router.router)
+app.include_router(broker_router.router, prefix="/api/broker")
 
 
 @app.get("/")
@@ -117,6 +119,13 @@ def root():
             "/api/options/screener",
             "/api/options/screener/{ticker}/history",
             "/api/options/overview",
+            # Broker / trading (require X-Internal-Secret)
+            "/api/broker/status",
+            "/api/broker/balance",
+            "/api/broker/positions",
+            "/api/broker/orders",
+            "/api/broker/order",
+            "/api/broker/trades",
         ],
     }
 

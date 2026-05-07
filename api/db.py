@@ -238,6 +238,32 @@ class OptionsSignal(Base):
     created_at       = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
+# ── Trade journal ─────────────────────────────────────────────────────────────
+
+class Trade(Base):
+    """Unified trade record for all broker-executed orders (CTBC, IBKR, etc.)."""
+    __tablename__ = "trades"
+    __table_args__ = (UniqueConstraint("broker", "broker_order_id", name="uq_trade_broker_order"),)
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    broker          = Column(String(20), nullable=False, default="CTBC")
+    ticker          = Column(String(20), nullable=False, index=True)
+    market          = Column(String(10), nullable=False, default="TW")   # TW | US
+    side            = Column(String(10), nullable=False)                  # buy | sell
+    qty             = Column(Float, nullable=False)
+    order_type      = Column(String(20), default="LIMIT")
+    limit_price     = Column(Float, nullable=True)
+    broker_order_id = Column(String(100), nullable=True)
+    status          = Column(String(20), default="pending")              # pending | filled | cancelled | rejected
+    filled_qty      = Column(Float, nullable=True)
+    filled_price    = Column(Float, nullable=True)
+    commission      = Column(Float, nullable=True)
+    realized_pnl    = Column(Float, nullable=True)
+    signal_source   = Column(String(50), nullable=True)                  # weekly | options | manual
+    executed_at     = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 # ── Session dependency ────────────────────────────────────────────────────────
 
 def get_db():
