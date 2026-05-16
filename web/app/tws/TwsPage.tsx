@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import type { TwsStock, TwsUniverse, OhlcvResponse, BrokerBalance, Position } from "@/lib/types";
 import { twsUniverse, twsStock, twsLookup, chartOhlcv, brokerBalance, brokerPositions } from "@/lib/api";
+import TerminalLog, { type LogEntry, type LogType } from "@/components/TerminalLog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -196,13 +197,13 @@ function FlowBar({ label, value, max }: { label: string; value: number | null; m
 
 // ── Mini inline chart ──────────────────────────────────────────────────────────
 
-function MiniChart({ ticker, period }: { ticker: string; period: Period }) {
+function MiniChart({ ticker, period, market = "TW" }: { ticker: string; period: Period; market?: string }) {
   const [data, setData] = useState<OhlcvResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
-    chartOhlcv(ticker, period, "TW")
+    chartOhlcv(ticker, period, market)
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
@@ -499,7 +500,19 @@ function DetailPanel({ ticker, period, onPeriodChange }: {
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 
+type Broker = "CTBC" | "Moomoo";
+
 export default function TwsPage() {
+  // ── Broker selector ──────────────────────────────────────────────────────────
+  const [broker, setBroker] = useState<Broker>("CTBC");
+
+  // ── Terminal log ─────────────────────────────────────────────────────────────
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const addLog = useCallback((type: LogType, msg: string) => {
+    setLogs(prev => [...prev.slice(-99), { ts: new Date().toISOString(), type, msg }]);
+  }, []);
+
+  // ── TW (CTBC) state ──────────────────────────────────────────────────────────
   const [universe,      setUniverse]      = useState<TwsUniverse | null>(null);
   const [loading,       setLoading]       = useState(true);
   const [selected,      setSelected]      = useState<TwsStock | null>(null);
@@ -516,11 +529,20 @@ export default function TwsPage() {
   const [sector,    setSector]    = useState("");
   const [sortBy,    setSortBy]    = useState<SortKey>("signal");
 
+  // ── US (Moomoo) state ─────────────────────────────────────────────────────────
+  const [moomooBalance,   setMoomooBalance]   = useState<BrokerBalance | null>(null);
+  const [moomooPositions, setMoomooPositions] = useState<Position[]>([]);
+  const [moomooSelected,  setMoomooSelected]  = useState<Position | null>(null);
+  const [usSearch,        setUsSearch]        = useState("");
+  const [usChartTicker,   setUsChartTicker]   = useState<string | null>(null);
+  const [usChartLoading,  setUsChartLoading]  = useState(false);
+
   const searchRef  = useRef<HTMLInputElement>(null);
   const didAutoLoad = useRef(false);
 
   const load = useCallback(async (q = "", cat: FilterCat = "all", sec = "", sort: SortKey = "signal") => {
     setLoading(true);
+    addLog("fetch", "GET /api/tws/universe");
     try {
       const data = await twsUniverse({
         signal_only: cat === "signal",
@@ -530,17 +552,19 @@ export default function TwsPage() {
         limit:       300,
       });
       setUniverse(data);
+      addLog("success", `載入 ${data.total} 支股票 · 訊號 ${data.signal_count} · 高值 ${data.high_value_count}`);
       // Prefer 2330 (TSMC) as the default selection, fall back to first stock
       if (!selected) {
         const tsmc = data.stocks.find(s => s.ticker === "2330") ?? data.stocks[0];
         if (tsmc) setSelected(tsmc);
       }
-    } catch {
+    } catch (e: any) {
       setUniverse(null);
+      addLog("error", `universe 載入失敗: ${e?.message ?? "未知錯誤"}`);
     } finally {
       setLoading(false);
     }
-  }, [selected]);
+  }, [selected, addLog]);
 
   useEffect(() => { load(); }, []);
 
@@ -555,11 +579,30 @@ export default function TwsPage() {
     }
   }, [loading, universe]);
 
-  // Fetch CTBC account data on mount (silent fail)
+  // Fetch CTBC account data on mount (silent fail — CTBC may not be running)
   useEffect(() => {
-    brokerBalance("TW").then(setCtbcBalance).catch(() => {});
-    brokerPositions("TW").then(setCtbcPositions).catch(() => {});
+    addLog("fetch", "GET /api/broker/balance?market=TW");
+    brokerBalance("TW")
+      .then(b => { setCtbcBalance(b); addLog("success", `CTBC 總資產 ${NT(b.total_value)}`); })
+      .catch((e: any) => { addLog("error", `CTBC balance: ${e?.message ?? "未連線"}`); });
+    addLog("fetch", "GET /api/broker/positions?market=TW");
+    brokerPositions("TW")
+      .then(p => { setCtbcPositions(p); addLog("info", `CTBC 持倉 ${p.length} 筆`); })
+      .catch(() => { addLog("warn", "CTBC positions: 未連線或無持倉"); });
   }, []);
+
+  // Fetch Moomoo account data when switching to US mode (silent fail — OpenD may not be running)
+  useEffect(() => {
+    if (broker !== "Moomoo") return;
+    addLog("fetch", "GET /api/broker/balance?market=US");
+    brokerBalance("US")
+      .then(b => { setMoomooBalance(b); addLog("success", `Moomoo balance: $${b.total_value.toLocaleString()}`); })
+      .catch((e: any) => { addLog("error", `Moomoo balance: ${e?.message ?? "OpenD未啟動"}`); });
+    addLog("fetch", "GET /api/broker/positions?market=US");
+    brokerPositions("US")
+      .then(p => { setMoomooPositions(p); addLog("info", `Moomoo ${p.length} positions`); })
+      .catch(() => { addLog("warn", "Moomoo positions: OpenD未啟動或無持倉"); });
+  }, [broker]);
 
   const handleSearch = (q: string) => {
     setSearch(q);
@@ -585,19 +628,22 @@ export default function TwsPage() {
     const q = search.trim().toUpperCase();
     if (!q) return;
     const inRegistry = !!universeStocks.find(s => s.ticker === q);
-    console.log(`[TWS lookup] ticker=${q} inRegistry=${inRegistry}`);
+    addLog("fetch", `查詢 ${q}${inRegistry ? " (已在清單)" : " (即時抓取)"}`);
     setLookupLoading(true);
     setLookupError(null);
     try {
       const result = await twsLookup(q);
       if (result.error) {
         setLookupError(`找不到股票: ${q}`);
+        addLog("error", `${q}: 找不到`);
       } else {
         setLookupResult(result);
         setSelected(result);
+        addLog("success", `${q} 查詢成功`);
       }
     } catch {
       setLookupError(`查詢失敗: ${q}`);
+      addLog("error", `${q}: 查詢失敗`);
     } finally {
       setLookupLoading(false);
     }
@@ -613,8 +659,48 @@ export default function TwsPage() {
 
   const sectors = universe?.sectors ?? [];
 
+  const handleUsSearch = async () => {
+    const q = usSearch.trim().toUpperCase();
+    if (!q) return;
+    setMoomooSelected(null);
+    setUsChartLoading(true);
+    addLog("fetch", `US chart: ${q}`);
+    try {
+      await chartOhlcv(q, period, "US");
+      setUsChartTicker(q);
+      addLog("success", `${q} chart loaded`);
+    } catch (e: any) {
+      addLog("error", `${q}: ${e?.message ?? "chart fetch failed"}`);
+    } finally {
+      setUsChartLoading(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full pb-7">
+      {/* ── Broker selector strip ─────────────────────────────────────── */}
+      <div className="shrink-0 px-4 py-1.5 border-b border-[#2e2e50] bg-[#0a0a18] flex items-center gap-3">
+        {(["CTBC", "Moomoo"] as Broker[]).map(b => (
+          <button
+            key={b}
+            onClick={() => setBroker(b)}
+            className={[
+              "px-3 py-1 rounded-full text-xs font-bold transition-colors border",
+              broker === b
+                ? "bg-[#1a1a2e] border-[#448aff] text-white"
+                : "border-[#2e2e50] text-[#8888aa] hover:border-[#448aff] hover:text-white",
+            ].join(" ")}
+          >
+            {b === "CTBC" ? "🇹🇼 CTBC" : "🇺🇸 Moomoo"}
+          </button>
+        ))}
+        <span className="text-[10px] text-[#555570] ml-auto">
+          {broker === "CTBC" ? "台灣股票 · Win168" : "US Stocks · OpenD"}
+        </span>
+      </div>
+
+      {broker === "CTBC" && (
+      <>
       {/* ── Top toolbar ───────────────────────────────────────────────── */}
       <div className="shrink-0 px-4 py-2.5 border-b border-[#2e2e50] bg-[#111128] flex flex-wrap items-center gap-3">
         {/* Stats */}
@@ -798,6 +884,165 @@ export default function TwsPage() {
           )}
         </div>
       </div>
+      </>
+      )}
+
+      {broker === "Moomoo" && (
+        <div className="flex flex-1 overflow-hidden">
+          {/* ── Moomoo left sidebar ──────────────────────────────────── */}
+          <aside className="w-72 shrink-0 border-r border-[#2e2e50] flex flex-col overflow-hidden bg-[#0d0d14]">
+            {/* Moomoo account summary */}
+            <div className="shrink-0 px-3 py-2 border-b border-[#2e2e50] bg-[#111128]">
+              <p className="text-[9px] text-[#555570] uppercase tracking-wide mb-1.5">🇺🇸 Moomoo 帳戶</p>
+              {moomooBalance ? (
+                <div className="flex gap-4">
+                  <div>
+                    <p className="text-[8px] text-[#555570]">Total Value</p>
+                    <p className="text-xs font-bold text-white">${moomooBalance.total_value.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-[8px] text-[#555570]">Cash</p>
+                    <p className="text-xs font-bold text-white">${moomooBalance.cash.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-[8px] text-[#555570]">Unrealized P&L</p>
+                    <p className="text-xs font-bold" style={{ color: (moomooBalance.unrealized_pnl ?? 0) >= 0 ? "#00e676" : "#ff5252" }}>
+                      {(moomooBalance.unrealized_pnl ?? 0) >= 0 ? "+" : ""}${(moomooBalance.unrealized_pnl ?? 0).toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-[10px] text-[#555570]">未連線 — OpenD需啟動</p>
+              )}
+            </div>
+
+            {/* Position list */}
+            <div className="flex-1 overflow-y-auto">
+              {moomooPositions.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3 text-center p-6">
+                  <div className="text-4xl">🇺🇸</div>
+                  <p className="text-sm text-[#8888aa]">No positions</p>
+                  <p className="text-xs text-[#555570]">Start Moomoo OpenD to load positions</p>
+                </div>
+              ) : (
+                moomooPositions.map(p => (
+                  <button
+                    key={p.ticker}
+                    onClick={() => { setMoomooSelected(p); setUsChartTicker(null); }}
+                    className={[
+                      "w-full text-left px-4 py-3 border-b border-[#1e1e38] transition-colors",
+                      moomooSelected?.ticker === p.ticker ? "bg-[#1a2744]" : "hover:bg-[#14142a]",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-sm text-white">{p.ticker}</span>
+                      <span className="text-xs text-[#8888aa]">{p.qty.toLocaleString()} sh</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-[#555570]">avg ${p.avg_cost.toFixed(2)}</span>
+                      <span className="text-[10px] font-bold" style={{ color: (p.pnl ?? 0) >= 0 ? "#00e676" : "#ff5252" }}>
+                        {(p.pnl ?? 0) >= 0 ? "+" : ""}${(p.pnl ?? 0).toFixed(2)}
+                      </span>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+
+            {/* US stock search */}
+            <div className="shrink-0 p-3 border-t border-[#2e2e50] bg-[#111128]">
+              <p className="text-[9px] text-[#555570] uppercase tracking-wide mb-1.5">Search US Ticker</p>
+              <div className="flex gap-1">
+                <input
+                  value={usSearch}
+                  onChange={e => setUsSearch(e.target.value.toUpperCase())}
+                  onKeyDown={e => e.key === "Enter" && handleUsSearch()}
+                  placeholder="AAPL, TSLA…"
+                  className="flex-1 bg-[#1a1a2e] border border-[#2e2e50] rounded-lg px-2 py-1 text-xs text-white placeholder-[#555570] focus:outline-none focus:border-[#448aff]"
+                />
+                <button
+                  onClick={handleUsSearch}
+                  disabled={usChartLoading || !usSearch.trim()}
+                  className="text-[10px] font-bold px-2 py-1 rounded border border-[#448aff] text-[#448aff] bg-[#1a2744] hover:bg-[#1e2f5e] disabled:opacity-40 transition-colors shrink-0"
+                >
+                  {usChartLoading ? "..." : "Chart"}
+                </button>
+              </div>
+            </div>
+          </aside>
+
+          {/* ── Moomoo right panel ───────────────────────────────────── */}
+          <div className="flex-1 overflow-hidden bg-[#0d0d14]">
+            {moomooSelected ? (
+              <div className="p-5 space-y-5 overflow-y-auto h-full">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h2 className="text-2xl font-extrabold text-white">{moomooSelected.ticker}</h2>
+                    <p className="text-sm text-[#8888aa]">{moomooSelected.qty.toLocaleString()} shares · avg cost ${moomooSelected.avg_cost.toFixed(2)}</p>
+                  </div>
+                  <a
+                    href={`/charts?ticker=${moomooSelected.ticker}&market=US`}
+                    target="_blank"
+                    className="text-xs text-[#448aff] hover:text-[#6da3ff] border border-[#448aff]/40 rounded-lg px-2.5 py-1.5 transition-colors"
+                  >
+                    Full Chart ↗
+                  </a>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <StatCard label="Market Value" value={`$${moomooSelected.mkt_value.toLocaleString()}`} />
+                  <StatCard label="Avg Cost" value={`$${moomooSelected.avg_cost.toFixed(2)}`} />
+                  <StatCard label="Unrealized P&L" value={`${(moomooSelected.pnl ?? 0) >= 0 ? "+" : ""}$${(moomooSelected.pnl ?? 0).toFixed(2)}`}
+                    color={(moomooSelected.pnl ?? 0) >= 0 ? "#00e676" : "#ff5252"} />
+                  <StatCard label="Shares" value={moomooSelected.qty.toLocaleString()} />
+                </div>
+                <div className="bg-[#111128] border border-[#2e2e50] rounded-xl p-4">
+                  <div className="flex items-center gap-1 mb-3">
+                    {(["1mo", "3mo", "6mo", "1y"] as Period[]).map(p => (
+                      <button key={p} onClick={() => setPeriod(p)}
+                        className={["text-[10px] font-bold px-2 py-0.5 rounded border transition-colors",
+                          period === p ? "border-[#ffd700] text-[#ffd700] bg-[#ffd70015]" : "border-[#2e2e50] text-[#555570] hover:border-[#ffd700]",
+                        ].join(" ")}>{p}</button>
+                    ))}
+                  </div>
+                  <MiniChart ticker={moomooSelected.ticker} period={period} market="US" />
+                </div>
+              </div>
+            ) : usChartTicker ? (
+              <div className="p-5 space-y-5 overflow-y-auto h-full">
+                <div className="flex items-start justify-between">
+                  <h2 className="text-2xl font-extrabold text-white">{usChartTicker}</h2>
+                  <a
+                    href={`/charts?ticker=${usChartTicker}&market=US`}
+                    target="_blank"
+                    className="text-xs text-[#448aff] hover:text-[#6da3ff] border border-[#448aff]/40 rounded-lg px-2.5 py-1.5 transition-colors"
+                  >
+                    Full Chart ↗
+                  </a>
+                </div>
+                <div className="bg-[#111128] border border-[#2e2e50] rounded-xl p-4">
+                  <div className="flex items-center gap-1 mb-3">
+                    {(["1mo", "3mo", "6mo", "1y"] as Period[]).map(p => (
+                      <button key={p} onClick={() => setPeriod(p)}
+                        className={["text-[10px] font-bold px-2 py-0.5 rounded border transition-colors",
+                          period === p ? "border-[#ffd700] text-[#ffd700] bg-[#ffd70015]" : "border-[#2e2e50] text-[#555570] hover:border-[#ffd700]",
+                        ].join(" ")}>{p}</button>
+                    ))}
+                  </div>
+                  <MiniChart ticker={usChartTicker} period={period} market="US" />
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full gap-4 text-center">
+                <div className="text-6xl">🇺🇸</div>
+                <p className="text-white font-bold text-lg">Select a Position or Search a Ticker</p>
+                <p className="text-[#8888aa] text-sm">Click a holding on the left, or search a US ticker below</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <TerminalLog logs={logs} />
     </div>
   );
 }
