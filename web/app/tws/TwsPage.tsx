@@ -677,7 +677,7 @@ export default function TwsPage() {
   };
 
   return (
-    <div className="flex flex-col h-full pb-7">
+    <div className="flex flex-col h-full">
       {/* ── Broker selector strip ─────────────────────────────────────── */}
       <div className="shrink-0 px-4 py-1.5 border-b border-[#2e2e50] bg-[#0a0a18] flex items-center gap-3">
         {(["CTBC", "Moomoo"] as Broker[]).map(b => (

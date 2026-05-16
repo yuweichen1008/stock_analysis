@@ -57,7 +57,7 @@ export default function TerminalLog({ logs }: TerminalLogProps) {
 
   return (
     <div
-      className="fixed bottom-0 left-0 right-0 z-40 bg-[#080810] border-t border-[#2e2e50] font-mono select-none"
+      className="shrink-0 bg-[#080810] border-t border-[#2e2e50] font-mono select-none"
       style={{ height: open ? 180 : 28 }}
     >
       {/* Header / collapsed bar */}
