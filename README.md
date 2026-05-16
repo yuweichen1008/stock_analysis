@@ -1,17 +1,18 @@
-# Oracle — AI Stock Screener + Options Sentiment Dashboard
+# LokiStock — AI Stock Screener, Options Sentiment & Taiwan Trading Dashboard
 
-An iOS app and web dashboard for Taiwan and US stock analysis. Every trading day it scans thousands of stocks, scores them, runs AI analysis, tracks the **put/call ratio** on market-moving news, and sends a Telegram report — all automatically on Google Cloud. A daily **US options screener** identifies actionable RSI + PCR + IV Rank setups across ~200 liquid stocks and pushes top signals to subscribers.
+A multi-platform stock analysis system with a **web dashboard** (lokistock.com), an **iOS app** (LokiStock Oracle), and a **Telegram bot**. Every trading day it scans thousands of Taiwan and US stocks, scores them with a 7-factor model, runs multi-agent AI analysis, tracks **put/call ratios** on market-moving news, and sends automated Telegram reports — all on Google Cloud Run. A live **CTBC broker integration** lets you place Taiwan stock orders directly from the dashboard.
 
 ---
 
 ## What It Does (ELI5)
 
-1. **8:00 AM (Taiwan time)** — Oracle predicts whether the TAIEX index will go up or down today, using 5 market signals (S&P 500 overnight, VIX fear gauge, momentum, etc.)
-2. **9:45 AM + 3:30 PM ET (US weekdays)** — Options screener scans ~200 liquid US stocks for RSI extremes, PCR fear/greed, IV Rank, and unusual options flow — scores each setup 0-10 and pushes the top signals to subscribers
-3. **Every 30 min during market hours** — Fetches the latest news for signal stocks, snapshots the **options put/call ratio** (PCR) so you can see whether the market is positioned to "sell the news" or "buy the news"
-4. **2:05 PM (Taiwan time)** — After the market closes, Oracle checks if it was right, runs the signal scan, and sends a Telegram report with today's best stock picks
-5. **iOS app** — Browse signals, news with live PCR indicators, bet virtual coins on the daily prediction, save stocks to a watchlist, read community trade ideas
-6. **Web dashboard** — Desktop-friendly two-pane news feed, weekly contrarian signals, and **options screener** with RSI+PCR dual-axis charts and IV Rank badges
+1. **8:00 AM (Taiwan time)** — Predicts whether the TAIEX index will go up or down today using 5 market signals (S&P 500 overnight, VIX, momentum, etc.)
+2. **9:45 AM + 3:30 PM ET (US weekdays)** — Options screener scans ~200 liquid US stocks for RSI extremes, PCR fear/greed, IV Rank, and unusual options flow — scores each setup 0–10 and pushes top signals to subscribers
+3. **Every 30 min during market hours** — Fetches latest news for signal stocks, snapshots the **options put/call ratio (PCR)** so you can see how the market is positioned around each news item
+4. **2:05 PM (Taiwan time)** — After market close, resolves the prediction, runs the full TW signal scan, and sends a Telegram report with today's best stock picks
+5. **Web dashboard** (lokistock.com) — Moomoo-style TWS stock management, high-low band charts, options screener, live CTBC trading (place orders, view positions/balance, trade history), backtesting
+6. **iOS app** (LokiStock Oracle) — Browse TW/US signals, bet virtual coins on the daily prediction, enhanced stock detail with RSI gauge + foreign flow bars, CTBC portfolio view, trade history
+7. **CTBC broker integration** — Place Taiwan stock limit orders from the web dashboard; trade journal tracks every order with status, filled price, and realized P&L
 
 ---
 
@@ -183,10 +184,11 @@ ORACLE_API_URL=http://localhost:8000 npm run dev
 
 **Required for local dev:**
 ```env
-DATABASE_URL=postgresql+psycopg2://oracle:oracle_dev_password@localhost:5432/oracle
+DATABASE_URL=postgresql+psycopg2://oracle:oracle_dev_password@localhost:5433/oracle
 JWT_SECRET=any-random-string-32-chars-minimum
 INTERNAL_API_SECRET=another-random-string
 ```
+> Port 5433 is used locally to avoid conflicts with other Postgres instances.
 
 **Required for pipeline + Telegram:**
 ```env
@@ -197,6 +199,14 @@ TELEGRAM_CHAT_ID=your_channel_id
 **Required for AI analysis:**
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**Required for CTBC trading:**
+```env
+CTBC_ID=your-ctbc-account-id
+CTBC_PASSWORD=your-ctbc-password
+CTBC_DRY_RUN=true             # false = submit real orders
+NEXT_PUBLIC_INTERNAL_SECRET=same-as-INTERNAL_API_SECRET  # web Trading page auth
 ```
 
 **Optional (GCS, auth):**
@@ -344,6 +354,7 @@ The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-
 
 ## API Endpoints
 
+### Public / JWT-protected
 | Route | Auth | Description |
 |-------|------|-------------|
 | `GET /health` | — | Service + DB health check |
@@ -377,11 +388,46 @@ The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-
 | `GET /api/options/screener` | — | Latest options signals (RSI+PCR+IV Rank, 5-min cache) |
 | `GET /api/options/screener/{ticker}/history` | — | 30-day options signal history for one ticker |
 | `GET /api/options/overview` | — | VIX, market PCR, buy/sell/unusual counts, top 3 signals |
-| `GET /api/options/db-status` | — | Row counts for options tables — detect empty/unseeded DB |
+| `GET /api/options/db-status` | — | Row counts for options tables |
 | `GET /subscribe` | — | Telegram subscription web page |
 | `POST /api/subscribe` | — | Subscribe Telegram chat ID |
-| `POST /api/sandbox/settle` | X-API-Secret | Settle bets (called by pipeline) |
-| `POST /api/notify/broadcast` | X-API-Secret | Send push notifications (morning/result/options_signals) |
+
+### TWS (Taiwan Stock Management)
+| Route | Auth | Description |
+|-------|------|-------------|
+| `GET /api/tws/universe` | — | Enriched TW stock list (signal + sector + sort filters) |
+| `GET /api/tws/stock/{ticker}` | — | Single stock detail from universe |
+| `GET /api/tws/lookup/{ticker}` | — | DB-first lookup: DB cache → universe → yfinance+store |
+| `POST /api/tws/cache/invalidate` | — | Clear in-memory universe cache |
+
+### Charts
+| Route | Auth | Description |
+|-------|------|-------------|
+| `GET /api/charts/ohlcv/{ticker}?period=3mo&market=US` | — | OHLCV bars with MA20/MA50 (yfinance) |
+| `GET /api/charts/search?q=AAPL` | — | Fast ticker info lookup |
+
+### Backtest
+| Route | Auth | Description |
+|-------|------|-------------|
+| `GET /api/backtest/options` | — | Options RSI+PCR win-rate (1h cache) |
+| `GET /api/backtest/signals` | — | TW mean-reversion backtest with equity curve |
+
+### Broker / Trading (requires `X-Internal-Secret` header)
+| Route | Auth | Description |
+|-------|------|-------------|
+| `GET /api/broker/status` | Secret | Connection status + dry-run flag |
+| `GET /api/broker/balance` | Secret | Live CTBC cash + total value + unrealized P&L |
+| `GET /api/broker/positions` | Secret | Live open positions |
+| `GET /api/broker/orders?days=7` | Secret | Recent orders from CTBC |
+| `POST /api/broker/order` | Secret | Place limit order; records in `trades` table |
+| `GET /api/broker/trades` | Secret | Trade journal from DB (filterable by ticker/status/days) |
+| `GET /api/broker/trades/{ticker}` | Secret | Trade history for one ticker |
+
+### Internal (pipeline → API)
+| Route | Auth | Description |
+|-------|------|-------------|
+| `POST /api/sandbox/settle` | X-API-Secret | Settle Oracle bets |
+| `POST /api/notify/broadcast` | X-API-Secret | Send push notifications |
 | `POST /api/stocks/settle` | X-API-Secret | Settle stock bets |
 
 ---
@@ -389,24 +435,24 @@ The Telegram bot (`oracle-telegram-bot`) runs continuously and responds in real-
 ## Database Schema
 
 ```
-users            id, auth_provider (apple/google/device), auth_id, email,
-                 display_name, avatar_url, coins, push_token
+users               id, auth_provider (apple/google/device), auth_id, email,
+                    display_name, avatar_url, coins, push_token
 
-subscribers      telegram_id, active  (Telegram opt-in for daily reports)
+subscribers         telegram_id, active  (Telegram opt-in)
 
-bets             user_id→users, date, direction (Bull/Bear), amount, payout
+bets                user_id→users, date, direction (Bull/Bear), amount, payout
 
-stock_bets       user_id→users, ticker, direction, entry/exit price, payout
+stock_bets          user_id→users, ticker, direction, entry/exit price, payout
 
-watchlist        user_id→users, ticker, market  [unique per user+ticker+market]
+watchlist           user_id→users, ticker, market  [unique: user+ticker+market]
 
-posts            user_id→users, ticker, content (280 chars), signal_type
+posts               user_id→users, ticker, content (280 chars), signal_type
 
-reactions        user_id→users, post_id→posts, emoji_type  [unique per user+post]
+reactions           user_id→users, post_id→posts, emoji_type  [unique: user+post]
 
-news_items       external_id (sha1 dedup), ticker, market (US/TW/MARKET),
-                 headline, source, url, published_at, sentiment_score,
-                 related_ids (JSON array)
+news_items          external_id (sha1 dedup), ticker, market (US/TW/MARKET),
+                    headline, source, url, published_at, sentiment_score,
+                    related_ids (JSON array)
 
 news_pcr_snapshots  news_item_id→news_items, ticker, snapshot_at,
                     put_volume, call_volume, pcr, pcr_label
@@ -417,20 +463,32 @@ weekly_signals      ticker, week_ending, return_pct, signal_type (buy/sell),
                     [unique: ticker + week_ending]
 
 options_iv_snapshots  ticker, snapshot_at, avg_iv
-                      (accumulates daily; used for IV Rank computation)
+                      (accumulates daily for IV Rank; accurate after 30+ snapshots)
 
-options_signals     ticker, snapshot_at, price, price_change_1d, rsi_14,
-                    pcr, pcr_label, put_volume, call_volume,
-                    avg_iv, iv_rank (null until 30+ snapshots), total_oi,
-                    volume_oi_ratio, signal_type, signal_score, signal_reason
-                    [unique: ticker + snapshot_at (15-min bucket)]
+options_signals     ticker, snapshot_at, price, rsi_14, pcr, avg_iv, iv_rank,
+                    total_oi, volume_oi_ratio, signal_type, signal_score, signal_reason
+                    [unique: ticker + snapshot_at]
+
+trades              broker, ticker, market, side (buy/sell), qty, order_type,
+                    limit_price, broker_order_id, status (pending/filled/cancelled/rejected),
+                    filled_qty, filled_price, commission, realized_pnl, signal_source
+                    [unique: broker + broker_order_id]
+
+tws_stock_cache     ticker (unique), name, industry, price, open_price,
+                    high_52w, low_52w, volume, market_cap, pe_ratio, roe,
+                    dividend_yield, rsi_14, ma20, ma120, bias, fetched_at, updated_at
+                    (DB-first cache for TWS ticker lookup; refreshed every 4h)
 ```
 
-Migrations managed by Alembic:
-- `alembic/versions/0001_initial_schema.py` — base 7 tables
-- `alembic/versions/0002_news_and_pcr.py` — news_items + news_pcr_snapshots
-- `alembic/versions/0003_weekly_signals.py` — weekly_signals
-- `alembic/versions/0004_options_signals.py` — options_signals + options_iv_snapshots
+**Migrations:**
+```
+0001_initial_schema.py     — base 7 tables
+0002_news_and_pcr.py       — news_items + news_pcr_snapshots
+0003_weekly_signals.py     — weekly_signals
+0004_options_signals.py    — options_signals + options_iv_snapshots
+0005_add_trades_table.py   — trades (CTBC order journal)
+0006_add_tws_stock_cache.py — tws_stock_cache (ticker lookup cache)
+```
 
 ---
 
@@ -461,7 +519,25 @@ eas build --platform ios --profile preview
 | 📰 News | 12h news feed · put/call ratio bars · PCR timeline · related news |
 | 👥 Community | Post trade ideas · react with 🐂🐻🔥 · market filter |
 | ⭐ Watchlist | Saved tickers · today's signal alerts |
-| 👤 Profile | Coins · leaderboard rank · sign out |
+| 👤 Profile | Coins · leaderboard rank · CTBC portfolio (balance, holdings, P&L) · sign out |
+
+**Stock detail screen** (`/stock/[ticker]`):
+- RSI arc gauge (pure View-based, no SVG dependency)
+- Foreign investor flow bars (F5 / F20 / F60 day net buy/sell)
+- Signal banner for mean-reversion and high-value moat stocks
+- NT$ price formatting for Taiwan market
+- "View Chart" button → opens lokistock.com/charts in browser
+
+**Trade history screen** (`/trade-history`):
+- Full CTBC order journal with buy/sell badges, filled price, realized P&L
+- Filter pills: All / Buy / Sell / Pending / Filled
+
+**Build for TestFlight / App Store:**
+```bash
+eas build --platform ios --profile preview    # TestFlight
+eas build --platform ios --profile production # App Store
+```
+Bundle ID: `com.lokistock.oracle` · Min iOS: 16.0
 
 ---
 
@@ -471,21 +547,28 @@ eas build --platform ios --profile preview
 cd web
 npm install
 ORACLE_API_URL=http://localhost:8000 npm run dev
-# → http://localhost:3000/news
+# → http://localhost:3000
 ```
 
 **Pages:**
-- `/news` — Two-pane layout: news list with PCR bars (left) + PCR timeline chart + related news (right)
-- `/weekly` — Two-pane: ±5% contrarian signals (left) + PCR bar + history table (right)
-- `/options` — VIX overview bar + filter pills (signal type, RSI zone) + signal list with RSI meter + IV Rank badge + dual-axis RSI/PCR Recharts chart (right pane)
-- `/subscribe` — Telegram subscription page with FAQ and benefit cards
+
+| Route | Description |
+|-------|-------------|
+| `/tws` | **Moomoo-style TWS stock management** — left list (RSI bar, signal badge, bias%) + right detail panel (inline high-low chart, RSI arc gauge, foreign flow bars, fundamentals). Enter a ticker number and press Enter to trigger DB-first lookup (DB cache → universe → yfinance fetch+store). |
+| `/charts` | **High-low band chart** — Recharts stacked Area (high-low range) + close/MA20/MA50 lines + volume bar chart. Period pills (1mo/3mo/6mo/1y), market toggle (TW/US), ticker search. |
+| `/trading` | **CTBC live trading dashboard** — account balance bar, open positions table, order form (ticker + buy/sell + qty + limit price + confirm modal), trade history with filters. |
+| `/backtest` | **Backtesting** — options RSI+PCR win-rate cards (buy/sell/combined) + signals mean-reversion equity curve + trades table. |
+| `/options` | Options screener + RSI/PCR dual-axis chart + **P&L calculator** (call/put payoff at expiry). |
+| `/news` | Two-pane: news list with PCR bars (left) + PCR timeline chart + related news (right). |
+| `/weekly` | Two-pane: ±5% contrarian signals + PCR bar + history table. |
+| `/subscribe` | Telegram subscription page. |
 
 **Build for production:**
 ```bash
 cd web && npm run build
 ```
 
-The web dashboard is deployed to Cloud Run as `oracle-web` and proxies all `/api/*` requests to `oracle-api`.
+The web dashboard deploys to Cloud Run as `oracle-web` and proxies `/api/*` to `oracle-api`. Sitemap is served at `/sitemap.xml`.
 
 ---
 
@@ -522,9 +605,11 @@ stock_analysis/
 │
 ├── api/                         FastAPI backend
 │   ├── config.py                  All settings (reads from .env / Secret Manager)
-│   ├── db.py                      SQLAlchemy models (9 tables)
+│   ├── db.py                      SQLAlchemy models (14 tables)
 │   ├── auth.py                    JWT + Apple/Google token verification
 │   ├── main.py                    App entry point, CORS, rate limiting
+│   ├── services/
+│   │   └── broker_service.py      CTBC Playwright wrapper (asyncio.to_thread)
 │   └── routers/
 │       ├── auth.py                POST /api/auth/{apple,google,device}
 │       ├── oracle.py              GET  /api/oracle/{today,history,stats,live}
@@ -536,9 +621,13 @@ stock_analysis/
 │       ├── sandbox.py             GET/POST /api/sandbox/  (betting game)
 │       ├── watchlist.py           CRUD /api/watchlist + /api/watchlist/alerts
 │       ├── feed.py                GET/POST /api/feed + reactions
-│       ├── notify.py              POST /api/notify/broadcast (morning/result/options_signals)
+│       ├── notify.py              POST /api/notify/broadcast
 │       ├── stocks.py              POST /api/stocks/settle (internal)
-│       └── subscribe.py           Telegram subscription page + API
+│       ├── subscribe.py           Telegram subscription page + API
+│       ├── broker.py              GET/POST /api/broker/* (CTBC; X-Internal-Secret)
+│       ├── tws.py                 GET /api/tws/universe|stock|lookup (TWS management)
+│       ├── charts.py              GET /api/charts/ohlcv/{ticker} (yfinance OHLCV)
+│       └── backtest.py            GET /api/backtest/{options,signals}
 │
 ├── news/                        News + PCR pipeline package
 │   ├── fetcher.py                 Google News RSS with deduplication (sha1)
@@ -575,33 +664,44 @@ stock_analysis/
 │
 ├── alembic/                     DB migrations
 │   └── versions/
-│       ├── 0001_initial_schema.py   Base 7 tables
-│       ├── 0002_news_and_pcr.py     news_items + news_pcr_snapshots
-│       ├── 0003_weekly_signals.py   weekly_signals
-│       └── 0004_options_signals.py  options_signals + options_iv_snapshots
+│       ├── 0001_initial_schema.py    Base 7 tables
+│       ├── 0002_news_and_pcr.py      news_items + news_pcr_snapshots
+│       ├── 0003_weekly_signals.py    weekly_signals
+│       ├── 0004_options_signals.py   options_signals + options_iv_snapshots
+│       ├── 0005_add_trades_table.py  trades (CTBC order journal)
+│       └── 0006_add_tws_stock_cache.py  tws_stock_cache
 │
-├── web/                         Next.js web dashboard
+├── web/                         Next.js 14 web dashboard (LokiStock brand)
+│   ├── app/tws/                   Moomoo-style TWS stock management + ticker lookup
+│   ├── app/charts/                High-low band chart (Recharts stacked Area)
+│   ├── app/trading/               CTBC live trading — balance, positions, orders
+│   ├── app/backtest/              Options + signals backtest + equity curve
+│   ├── app/options/               Options screener + P&L calculator
 │   ├── app/news/                  Two-pane PCR dashboard
-│   ├── app/weekly/                Weekly ±5% contrarian signals + history table
-│   ├── app/options/               Options screener — VIX bar, RSI+PCR chart, IV Rank
+│   ├── app/weekly/                Weekly ±5% contrarian signals
 │   ├── app/subscribe/             Telegram subscription page
+│   ├── app/sitemap.ts             Next.js native sitemap (SEO)
+│   ├── app/layout.tsx             LokiStock brand, nav, footer
 │   ├── components/                PcrChart, PcrBar, NewsCard, PcrLabel, etc.
-│   ├── lib/api.ts                 fetch wrappers (news, weekly, options)
-│   ├── lib/types.ts               TypeScript interfaces for all API responses
+│   ├── lib/api.ts                 fetch wrappers for all domains incl. broker
+│   ├── lib/types.ts               TypeScript interfaces (single source of truth)
 │   └── Dockerfile.web             Multi-stage Node 20 build
 │
-├── mobile/                      iOS app (Expo Router)
-│   ├── app/(tabs)/                6 main tabs (index, oracle, news, community, watchlist, profile)
-│   ├── app/stock/[ticker].tsx     Stock detail + AI analysis screen
+├── mobile/                      iOS app (Expo Router — LokiStock Oracle)
+│   ├── app/(tabs)/                Tabs: Signals, Oracle, News, Community, Watchlist, Profile
+│   ├── app/stock/[ticker].tsx     Enhanced: RSI gauge, foreign flow bars, signal banner
+│   ├── app/trade-history.tsx      CTBC trade journal with filter pills
 │   ├── app/create-post.tsx        Community post modal
 │   ├── app/auth.tsx               Sign-in screen
+│   ├── app.json                   Bundle: com.lokistock.oracle, min iOS 16.0
+│   ├── eas.json                   EAS build profiles (preview + production)
 │   ├── components/
 │   │   ├── NewsCard.tsx           PCR bar + sentiment indicator card
 │   │   ├── PcrBar.tsx             Red/green put/call volume split bar
 │   │   └── PcrTimeline.tsx        Horizontal PCR snapshot history scroll
 │   ├── store/auth.ts              Zustand — JWT + user state
 │   ├── store/watchlist.ts         Zustand — watchlist (optimistic updates)
-│   └── lib/api.ts                 Axios with Bearer token interceptor
+│   └── lib/api.ts                 Axios with Bearer token interceptor + broker namespace
 │
 ├── master_run.py                Daily cron entry point
 │                                  --step predict  (08:00 TST)
@@ -679,17 +779,36 @@ See [mcp/SETUP.md](mcp/SETUP.md) for TradingView launch flags and security notes
 
 ## Roadmap
 
+### Completed
 - [x] Taiwan + US signal pipeline (RSI + Bias + MA120, Ledoit-Wolf, institutional flow)
-- [x] TAIEX Market Oracle (daily prediction + scoring game)
+- [x] TAIEX Market Oracle (daily prediction + virtual coin scoring game)
 - [x] Multi-agent AI analysis (6 Claude agents + orchestrator)
-- [x] iOS app — 6 tabs, Apple/Google auth, community feed, watchlist
-- [x] FastAPI backend on GCP Cloud Run + Cloud SQL
-- [x] GCP Cloud Scheduler cron jobs (predict + resolve)
+- [x] iOS app — LokiStock Oracle (Apple/Google auth, community feed, watchlist)
+- [x] FastAPI backend on GCP Cloud Run + Cloud SQL (PostgreSQL)
+- [x] GCP Cloud Scheduler cron jobs (predict + resolve + options screener + news)
 - [x] News feed with put/call ratio — 12h rolling, PCR timeline, cross-related news
-- [x] Next.js web dashboard — news/weekly/options pages
-- [x] Telegram subscription page with FAQ + subscriber count
-- [x] US weekly contrarian pipeline — ±5% movers, $5 trades, broker integration
+- [x] LokiStock web dashboard — TWS, Charts, Trading, Backtest, Options, News, Weekly pages
+- [x] Telegram subscription page + subscriber count + daily automated reports
+- [x] US weekly contrarian pipeline — ±5% movers, broker-executed trades
 - [x] US options screener — RSI + PCR + IV Rank + unusual flow, twice daily, push delivery
-- [ ] IV Rank becomes fully accurate after 30 trading days of snapshot accumulation
+- [x] Moomoo-style TWS stock management page (split pane, RSI gauge, foreign flow, inline chart)
+- [x] High-low band chart page (Recharts stacked Area, period selector, volume)
+- [x] Options P&L calculator (call/put payoff at expiry, configurable strikes)
+- [x] Options + signals backtesting page (equity curve, win-rate cards, trades table)
+- [x] CTBC Win168 broker integration — live balance, positions, orders, order placement
+- [x] Trade journal (`trades` table) — full order history, status, realized P&L
+- [x] TWS DB-first ticker lookup — DB cache → universe → yfinance fetch+persist
+- [x] iOS enhanced stock detail — RSI gauge, foreign flow bars (F5/F20/F60), signal banner
+- [x] iOS trade history screen with filter pills
+- [x] iOS CTBC portfolio section in Profile tab
+- [x] App Store readiness — bundle `com.lokistock.oracle`, iOS 16.0 min, privacy manifest
+- [x] SEO sitemap at `/sitemap.xml`
+
+### In Progress / Upcoming
+- [ ] IV Rank accuracy improves after 30 trading days of snapshot accumulation
+- [ ] EAS credentials + first TestFlight build (fill in `appleId`, `ascAppId` in `eas.json`)
+- [ ] CTBC `alembic upgrade head` in production (migrations 0005 + 0006 pending on live DB)
+- [ ] App Store submission
+- [ ] Push notification for TWS signal stocks (when signal fires, notify watchlisted users)
 - [ ] LSTM / Transformer deep-learning price prediction
-- [ ] App Store release
+- [ ] Multi-broker support (IBKR, Moomoo) via the existing `brokers/` adapters
