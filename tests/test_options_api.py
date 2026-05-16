@@ -59,17 +59,20 @@ def client():
     app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=_engine)
 
-
 @pytest.fixture(autouse=True)
 def _clean_db_and_cache(client):
     """Before each test: truncate options tables and clear API caches."""
     from api.db import OptionsIvSnapshot, OptionsSignal
 
+    # Use the same Session maker that's bound to the module-scoped engine
     db = _Session()
-    db.query(OptionsSignal).delete()
-    db.query(OptionsIvSnapshot).delete()
-    db.commit()
-    db.close()
+    try:
+        db.query(OptionsSignal).delete()
+        db.query(OptionsIvSnapshot).delete()
+        db.commit()
+    finally:
+        db.close()
+    
     client._clear_caches()
     yield
 
@@ -80,20 +83,23 @@ def _seed_one_signal():
 
     snap = datetime(2026, 4, 28, 14, 45, tzinfo=timezone.utc).replace(tzinfo=None)
     db = _Session()
-    db.add(OptionsSignal(
-        ticker="AAPL",
-        snapshot_at=snap,
-        rsi_14=25.0,
-        pcr=1.2,
-        pcr_label="fear",
-        signal_type="buy_signal",
-        signal_score=7.5,
-        signal_reason="RSI=25.0 PCR=1.20(fear)",
-        executed=False,
-    ))
-    db.add(OptionsIvSnapshot(ticker="AAPL", snapshot_at=snap, avg_iv=0.28))
-    db.commit()
-    db.close()
+    try:
+        db.add(OptionsSignal(
+            ticker="AAPL",
+            snapshot_at=snap,
+            rsi_14=25.0,
+            pcr=1.2,
+            pcr_label="fear",
+            signal_type="buy_signal",
+            signal_score=7.5,
+            signal_reason="RSI=25.0 PCR=1.20(fear)",
+            executed=False,
+        ))
+        db.add(OptionsIvSnapshot(ticker="AAPL", snapshot_at=snap, avg_iv=0.28))
+        db.commit()
+    finally:
+        db.close()
+    
     return snap
 
 
