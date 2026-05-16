@@ -142,6 +142,7 @@ export interface TwsStock {
   news_sentiment: number | null;
   last_date:      string | null;
   error?:         string;
+  source?:        string;   // "db_cache" | "universe_snapshot" | "yfinance"
 }
 
 export interface TwsUniverse {

@@ -7,7 +7,7 @@ import {
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import type { TwsStock, TwsUniverse, OhlcvResponse } from "@/lib/types";
-import { twsUniverse, twsStock, chartOhlcv } from "@/lib/api";
+import { twsUniverse, twsStock, twsLookup, chartOhlcv } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -98,6 +98,18 @@ function RsiBar({ rsi }: { rsi: number | null }) {
 
 // ── Stock list row ─────────────────────────────────────────────────────────────
 
+function SourceBadge({ source }: { source?: string }) {
+  if (!source || source === "universe_snapshot") return null;
+  const label = source === "db_cache" ? "DB" : source === "yfinance" ? "即時" : source;
+  const color = source === "yfinance" ? "#ffd700" : "#448aff";
+  return (
+    <span className="text-[8px] font-extrabold px-1 py-0.5 rounded border"
+      style={{ borderColor: color, color, backgroundColor: `${color}18` }}>
+      {label}
+    </span>
+  );
+}
+
 function StockRow({
   stock, selected, onClick,
 }: { stock: TwsStock; selected: boolean; onClick: () => void }) {
@@ -114,6 +126,7 @@ function StockRow({
         <div className="flex items-center gap-2">
           <span className="font-bold text-sm text-white">{stock.ticker}</span>
           <SignalBadge category={stock.category} is_signal={stock.is_signal} />
+          <SourceBadge source={stock.source} />
         </div>
         <div className="text-right">
           {stock.price != null && (
@@ -487,10 +500,13 @@ function DetailPanel({ ticker, period, onPeriodChange }: {
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function TwsPage() {
-  const [universe,   setUniverse]   = useState<TwsUniverse | null>(null);
-  const [loading,    setLoading]    = useState(true);
-  const [selected,   setSelected]   = useState<TwsStock | null>(null);
-  const [period,     setPeriod]     = useState<Period>("3mo");
+  const [universe,      setUniverse]      = useState<TwsUniverse | null>(null);
+  const [loading,       setLoading]       = useState(true);
+  const [selected,      setSelected]      = useState<TwsStock | null>(null);
+  const [period,        setPeriod]        = useState<Period>("3mo");
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupResult,  setLookupResult]  = useState<TwsStock | null>(null);
+  const [lookupError,   setLookupError]   = useState<string | null>(null);
 
   // Filters & sort
   const [search,    setSearch]    = useState("");
@@ -544,11 +560,33 @@ export default function TwsPage() {
     load(search, filterCat, sector, sort);
   };
 
-  // Client-side high-value filter
-  const stocks = (universe?.stocks ?? []).filter(s => {
+  const handleLookup = async () => {
+    const q = search.trim().toUpperCase();
+    if (!q) return;
+    setLookupLoading(true);
+    setLookupError(null);
+    try {
+      const result = await twsLookup(q);
+      if (result.error) {
+        setLookupError(`找不到股票: ${q}`);
+      } else {
+        setLookupResult(result);
+        setSelected(result);
+      }
+    } catch {
+      setLookupError(`查詢失敗: ${q}`);
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
+  // Client-side high-value filter + prepend lookup result if not in universe
+  const universeStocks = (universe?.stocks ?? []).filter(s => {
     if (filterCat === "high_value") return s.category === "high_value_moat";
     return true;
   });
+  const lookupIsNew = lookupResult && !universeStocks.find(s => s.ticker === lookupResult.ticker);
+  const stocks = lookupIsNew ? [lookupResult!, ...universeStocks] : universeStocks;
 
   const sectors = universe?.sectors ?? [];
 
@@ -566,14 +604,27 @@ export default function TwsPage() {
           )}
         </div>
 
-        {/* Search */}
-        <input
-          ref={searchRef}
-          value={search}
-          onChange={e => handleSearch(e.target.value)}
-          placeholder="搜尋股票 (代碼/名稱)"
-          className="w-44 bg-[#1a1a2e] border border-[#2e2e50] rounded-lg px-3 py-1 text-xs text-white placeholder-[#555570] focus:outline-none focus:border-[#448aff]"
-        />
+        {/* Search + ticker lookup */}
+        <div className="flex items-center gap-1">
+          <input
+            ref={searchRef}
+            value={search}
+            onChange={e => handleSearch(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleLookup()}
+            placeholder="股票代碼/名稱 — Enter查詢"
+            className="w-48 bg-[#1a1a2e] border border-[#2e2e50] rounded-lg px-3 py-1 text-xs text-white placeholder-[#555570] focus:outline-none focus:border-[#448aff]"
+          />
+          <button
+            onClick={handleLookup}
+            disabled={lookupLoading || !search.trim()}
+            className="text-[10px] font-bold px-2 py-1 rounded border border-[#448aff] text-[#448aff] bg-[#1a2744] hover:bg-[#1e2f5e] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+          >
+            {lookupLoading ? "..." : "查詢"}
+          </button>
+        </div>
+        {lookupError && (
+          <span className="text-[10px] text-[#ff5252]">{lookupError}</span>
+        )}
 
         {/* Category filter */}
         <div className="flex gap-1">
@@ -663,7 +714,14 @@ export default function TwsPage() {
         </aside>
 
         {/* Right: detail panel */}
-        <div className="flex-1 overflow-hidden bg-[#0d0d14]">
+        <div className="flex-1 overflow-hidden bg-[#0d0d14] relative">
+          {lookupLoading && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[#0d0d14]/80 backdrop-blur-sm">
+              <div className="text-3xl animate-spin">⟳</div>
+              <p className="text-white font-bold">正在查詢股票資料…</p>
+              <p className="text-[#8888aa] text-xs">DB 快取 → 宇宙庫 → yfinance 即時抓取</p>
+            </div>
+          )}
           {selected ? (
             <DetailPanel
               ticker={selected.ticker}
@@ -674,7 +732,7 @@ export default function TwsPage() {
             <div className="flex flex-col items-center justify-center h-full gap-4 text-center">
               <div className="text-6xl">🇹🇼</div>
               <p className="text-white font-bold text-lg">選擇股票查看詳情</p>
-              <p className="text-[#8888aa] text-sm">左側清單點選任意股票</p>
+              <p className="text-[#8888aa] text-sm">左側清單點選，或輸入股票代碼按 Enter 查詢</p>
             </div>
           )}
         </div>

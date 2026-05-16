@@ -140,6 +140,9 @@ export const twsUniverse = (params?: {
 export const twsStock = (ticker: string): Promise<TwsStock> =>
   get(`/api/tws/stock/${encodeURIComponent(ticker)}`);
 
+export const twsLookup = (ticker: string): Promise<TwsStock> =>
+  get(`/api/tws/lookup/${encodeURIComponent(ticker.toUpperCase().trim())}`);
+
 // ── Charts ────────────────────────────────────────────────────────────────────
 
 export const chartOhlcv = (ticker: string, period = "3mo", market = "US"): Promise<OhlcvResponse> =>

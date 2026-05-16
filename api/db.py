@@ -264,6 +264,32 @@ class Trade(Base):
     created_at      = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class TwsStockCache(Base):
+    """On-demand cache for TWS stocks fetched from yfinance (persisted to DB)."""
+    __tablename__ = "tws_stock_cache"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    ticker         = Column(String(20), nullable=False, unique=True, index=True)
+    name           = Column(String(200), nullable=True)
+    industry       = Column(String(100), nullable=True)
+    price          = Column(Float, nullable=True)
+    open_price     = Column(Float, nullable=True)
+    high_52w       = Column(Float, nullable=True)
+    low_52w        = Column(Float, nullable=True)
+    volume         = Column(BigInteger, nullable=True)
+    market_cap     = Column(Float, nullable=True)
+    pe_ratio       = Column(Float, nullable=True)
+    roe            = Column(Float, nullable=True)
+    dividend_yield = Column(Float, nullable=True)
+    rsi_14         = Column(Float, nullable=True)
+    ma20           = Column(Float, nullable=True)
+    ma120          = Column(Float, nullable=True)
+    bias           = Column(Float, nullable=True)
+    fetched_at     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at     = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                            onupdate=lambda: datetime.now(timezone.utc))
+
+
 # ── Session dependency ────────────────────────────────────────────────────────
 
 def get_db():

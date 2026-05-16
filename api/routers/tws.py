@@ -11,8 +11,10 @@ GET /api/tws/stock/{ticker}    — single stock detail
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+from datetime import datetime, timezone
 import math
 import sys
 import time
@@ -25,7 +27,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
 from api.config import settings
+from api.db import TwsStockCache, get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tws", tags=["tws"])
@@ -283,3 +289,186 @@ def get_stock(ticker: str):
 def invalidate():
     _cache["data"] = None
     return {"cleared": True}
+
+
+# ── DB-first ticker lookup ─────────────────────────────────────────────────────
+
+def _fetch_and_store_ticker(ticker: str, db: Session) -> dict:
+    """Fetch ticker from yfinance, compute RSI/MA, persist to tws_stock_cache."""
+    import math
+    import yfinance as yf
+
+    yf_ticker = f"{ticker}.TW" if not ticker.upper().endswith(".TW") else ticker
+    t = yf.Ticker(yf_ticker)
+
+    hist = t.history(period="6mo")
+    info = {}
+    try:
+        info = t.info or {}
+    except Exception:
+        pass
+
+    price = rsi_14 = ma20 = ma120 = bias = None
+    open_price = None
+
+    if not hist.empty:
+        close = hist["Close"]
+        price = float(close.iloc[-1])
+        open_price = float(hist["Open"].iloc[-1])
+
+        # RSI(14) — Wilder's
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        rs = gain / loss.replace(0, float("nan"))
+        rsi_series = 100 - 100 / (1 + rs)
+        if len(rsi_series) >= 14:
+            v = rsi_series.iloc[-1]
+            rsi_14 = None if math.isnan(v) else round(float(v), 2)
+
+        # MA20 / MA120
+        if len(close) >= 20:
+            v = close.rolling(20).mean().iloc[-1]
+            ma20 = None if math.isnan(v) else round(float(v), 2)
+        if len(close) >= 120:
+            v = close.rolling(120).mean().iloc[-1]
+            ma120 = None if math.isnan(v) else round(float(v), 2)
+
+        # Bias vs MA20
+        if ma20 and ma20 > 0 and price:
+            bias = round((price - ma20) / ma20 * 100, 2)
+
+    def _g(k, default=None):
+        v = info.get(k, default)
+        return None if v == "N/A" or v is None else v
+
+    # name: try yfinance info, fall back to company_mapping
+    name = _g("longName") or _g("shortName")
+    if not name:
+        try:
+            map_df = _read_csv_local(BASE_DIR / "data" / "company" / "company_mapping.csv")
+            if map_df is not None:
+                row = map_df[map_df["ticker"] == ticker.upper()]
+                if not row.empty:
+                    name = str(row.iloc[0].get("name", ""))
+        except Exception:
+            pass
+
+    row = db.query(TwsStockCache).filter(TwsStockCache.ticker == ticker.upper()).first()
+    now = datetime.now(timezone.utc)
+
+    data = {
+        "name":           name,
+        "industry":       _g("sector") or _g("industry"),
+        "price":          price,
+        "open_price":     open_price,
+        "high_52w":       _safe(_g("fiftyTwoWeekHigh")),
+        "low_52w":        _safe(_g("fiftyTwoWeekLow")),
+        "volume":         int(_g("volume") or 0) or None,
+        "market_cap":     _safe(_g("marketCap")),
+        "pe_ratio":       _safe(_g("trailingPE")),
+        "roe":            _safe(_g("returnOnEquity")),
+        "dividend_yield": _safe(_g("dividendYield")),
+        "rsi_14":         rsi_14,
+        "ma20":           ma20,
+        "ma120":          ma120,
+        "bias":           bias,
+        "updated_at":     now,
+    }
+
+    if row:
+        for k, v in data.items():
+            setattr(row, k, v)
+    else:
+        row = TwsStockCache(ticker=ticker.upper(), fetched_at=now, **data)
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "ticker":         row.ticker,
+        "name":           row.name,
+        "industry":       row.industry,
+        "price":          row.price,
+        "open_price":     row.open_price,
+        "high_52w":       row.high_52w,
+        "low_52w":        row.low_52w,
+        "volume":         row.volume,
+        "market_cap":     row.market_cap,
+        "pe_ratio":       str(row.pe_ratio) if row.pe_ratio else None,
+        "roe":            str(round(row.roe * 100, 2)) + "%" if row.roe else None,
+        "dividend_yield": str(round(row.dividend_yield * 100, 2)) + "%" if row.dividend_yield else None,
+        "rsi_14":         row.rsi_14,
+        "ma20":           row.ma20,
+        "ma120":          row.ma120,
+        "bias":           row.bias,
+        "RSI":            row.rsi_14,
+        "MA20":           row.ma20,
+        "MA120":          row.ma120,
+        "is_signal":      False,
+        "category":       None,
+        "score":          None,
+        "source":         "yfinance",
+        "fetched_at":     row.fetched_at.isoformat() if row.fetched_at else None,
+        "updated_at":     row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+_STALE_HOURS = 4   # re-fetch if cached data is older than this
+
+
+@router.get("/lookup/{ticker}")
+async def lookup_ticker(ticker: str, db: Session = Depends(get_db)):
+    """
+    DB-first ticker lookup for the TWS search box.
+
+    1. Check tws_stock_cache in DB — return immediately if fresh (< 4h old)
+    2. Check universe_snapshot / company_mapping (in-memory, fast)
+    3. If not found or stale → fetch from yfinance, store in DB, return
+    """
+    ticker_up = ticker.upper().strip()
+
+    # ── Step 1: DB cache ──────────────────────────────────────────────────────
+    row = db.query(TwsStockCache).filter(TwsStockCache.ticker == ticker_up).first()
+    if row and row.updated_at:
+        age_hours = (datetime.now(timezone.utc) - row.updated_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+        if age_hours < _STALE_HOURS:
+            return {
+                "ticker":         row.ticker,
+                "name":           row.name,
+                "industry":       row.industry,
+                "price":          row.price,
+                "open_price":     row.open_price,
+                "high_52w":       row.high_52w,
+                "low_52w":        row.low_52w,
+                "volume":         row.volume,
+                "market_cap":     row.market_cap,
+                "pe_ratio":       str(row.pe_ratio) if row.pe_ratio else None,
+                "roe":            str(round(row.roe * 100, 2)) + "%" if row.roe else None,
+                "dividend_yield": str(round(row.dividend_yield * 100, 2)) + "%" if row.dividend_yield else None,
+                "RSI":            row.rsi_14,
+                "rsi_14":         row.rsi_14,
+                "MA20":           row.ma20,
+                "MA120":          row.ma120,
+                "ma20":           row.ma20,
+                "ma120":          row.ma120,
+                "bias":           row.bias,
+                "is_signal":      False,
+                "category":       None,
+                "score":          None,
+                "source":         "db_cache",
+                "fetched_at":     row.fetched_at.isoformat() if row.fetched_at else None,
+                "updated_at":     row.updated_at.isoformat() if row.updated_at else None,
+            }
+
+    # ── Step 2: in-memory universe (already loaded) ────────────────────────────
+    data = _get_universe()
+    for s in data["stocks"]:
+        if str(s.get("ticker", "")).upper() == ticker_up:
+            return {**s, "source": "universe_snapshot"}
+
+    # ── Step 3: yfinance fetch + persist ──────────────────────────────────────
+    try:
+        return await asyncio.to_thread(_fetch_and_store_ticker, ticker_up, db)
+    except Exception as exc:
+        return {"ticker": ticker_up, "error": str(exc), "source": "error"}
