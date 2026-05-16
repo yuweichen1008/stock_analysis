@@ -114,6 +114,124 @@ export interface DbStatus {
   seeded:           boolean;
 }
 
+// ── TWS Stock Management ──────────────────────────────────────────────────────
+
+export interface TwsStock {
+  ticker:         string;
+  name:           string | null;
+  industry:       string | null;
+  pe_ratio:       string | null;
+  roe:            string | null;
+  dividend_yield: string | null;
+  debt_to_equity: string | null;
+  is_signal:      boolean;
+  category:       string | null;
+  score:          number | null;
+  price:          number | null;
+  MA120:          number | null;
+  MA20:           number | null;
+  RSI:            number | null;
+  bias:           number | null;
+  vol_ratio:      number | null;
+  foreign_net:    number | null;
+  f5:             number | null;
+  f20:            number | null;
+  f60:            number | null;
+  f_zscore:       number | null;
+  short_interest: number | null;
+  news_sentiment: number | null;
+  last_date:      string | null;
+  error?:         string;
+}
+
+export interface TwsUniverse {
+  stocks:           TwsStock[];
+  total:            number;
+  count:            number;
+  signal_count:     number;
+  high_value_count: number;
+  last_updated:     string | null;
+  sectors:          string[];
+}
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+
+export interface OhlcvBar {
+  date:   string;
+  open:   number;
+  high:   number;
+  low:    number;
+  close:  number;
+  volume: number;
+  ma20:   number | null;
+  ma50:   number | null;
+}
+
+export interface OhlcvResponse {
+  ticker:       string;
+  market:       string;
+  period:       string;
+  bars:         OhlcvBar[];
+  latest_close: number | null;
+  latest_date:  string | null;
+  source:       string;
+  error?:       string;
+}
+
+// ── Backtesting ───────────────────────────────────────────────────────────────
+
+export interface OptionsBtGroup {
+  trades:          number;
+  wins:            number;
+  losses:          number;
+  win_rate_pct:    number;
+  avg_return_pct:  number;
+  sharpe:          number | null;
+}
+
+export interface OptionsBacktestResult {
+  buy_signal?:  OptionsBtGroup;
+  sell_signal?: OptionsBtGroup;
+  combined?:    OptionsBtGroup;
+  error?:       string;
+}
+
+export interface BacktestTrade {
+  ticker:         string;
+  entry_date:     string;
+  exit_date:      string;
+  entry_price:    number;
+  exit_price:     number;
+  profit_pct:     number;
+  net_profit_pct: number;
+  exit_reason:    string;
+  signal_rsi:     number;
+  signal_bias:    number;
+  signal_score:   number;
+}
+
+export interface SignalsBacktestSummary {
+  total_trades:      number;
+  wins:              number;
+  losses:            number;
+  win_rate:          number;
+  avg_profit_pct:    number;
+  total_profit:      number;
+  sharpe:            number;
+  max_drawdown:      number;
+  stop_loss_exits:   number;
+  take_profit_exits: number;
+  time_exits:        number;
+}
+
+export interface SignalsBacktestResult {
+  summary:        SignalsBacktestSummary;
+  trades:         BacktestTrade[];
+  equity_curve:   Array<{ date: string; equity: number }>;
+  tickers_tested: number;
+  error?:         string;
+}
+
 // ── Broker / Trading ──────────────────────────────────────────────────────────
 
 export interface BrokerStatus {

@@ -19,6 +19,9 @@ from api.routers import news as news_router
 from api.routers import weekly as weekly_router
 from api.routers import options as options_router
 from api.routers import broker as broker_router
+from api.routers import backtest as backtest_router
+from api.routers import charts as charts_router
+from api.routers import tws as tws_router
 
 
 def _get_real_ip(request: Request) -> str:
@@ -66,6 +69,9 @@ app.include_router(news_router.router)
 app.include_router(weekly_router.router)
 app.include_router(options_router.router)
 app.include_router(broker_router.router, prefix="/api/broker")
+app.include_router(backtest_router.router)
+app.include_router(charts_router.router)
+app.include_router(tws_router.router)
 
 
 @app.get("/")

@@ -234,6 +234,138 @@ function RsiPcrChart({ history }: { history: OptionsSignalItem[] }) {
   );
 }
 
+// ── Options P&L Calculator ────────────────────────────────────────────────────
+
+function OptionsPnlCalc({
+  price,
+  signalType,
+}: {
+  price: number | null;
+  signalType: OptionsSignalItem["signal_type"];
+}) {
+  const defaultStrike = price ? Math.round(price) : 100;
+  const defaultSide = signalType === "sell_signal" ? "put" : "call";
+
+  const [side,      setSide]      = useState<"call" | "put">(defaultSide);
+  const [strike,    setStrike]    = useState(String(defaultStrike));
+  const [premium,   setPremium]   = useState("5");
+  const [contracts, setContracts] = useState("1");
+
+  const K = parseFloat(strike)    || 0;
+  const P = parseFloat(premium)   || 0;
+  const C = parseFloat(contracts) || 1;
+  const multiplier = 100; // standard US options contract
+
+  const breakeven = side === "call" ? K + P : K - P;
+  const maxLoss   = P * multiplier * C;
+  const maxGain   = side === "call" ? "Unlimited" : `$${Math.max(0, (K - P) * multiplier * C).toLocaleString()}`;
+
+  const pnlAtPrice = (underlying: number) => {
+    const payoff =
+      side === "call"
+        ? Math.max(0, underlying - K) - P
+        : Math.max(0, K - underlying) - P;
+    return payoff * multiplier * C;
+  };
+
+  const chartData = price
+    ? Array.from({ length: 21 }, (_, i) => {
+        const underlying = price * (0.7 + i * 0.03);
+        const pnl = pnlAtPrice(underlying);
+        return {
+          price: underlying.toFixed(2),
+          pnl:   parseFloat(pnl.toFixed(0)),
+        };
+      })
+    : [];
+
+  return (
+    <div className="bg-[#1a1a2e] border border-[#2e2e50] rounded-xl p-4 mb-6">
+      <p className="text-xs text-[#8888aa] font-bold uppercase mb-3">Options P&L Calculator</p>
+
+      <div className="flex flex-wrap gap-3 mb-4">
+        {/* Side */}
+        <div>
+          <label className="text-[10px] text-[#555570] uppercase block mb-1">Type</label>
+          <div className="flex gap-1">
+            {(["call", "put"] as const).map(s => (
+              <button
+                key={s}
+                onClick={() => setSide(s)}
+                className={[
+                  "px-3 py-1 text-xs font-bold rounded border transition-colors",
+                  side === s
+                    ? s === "call"
+                      ? "border-[#00e676] text-[#00e676] bg-[#00e67620]"
+                      : "border-[#ff5252] text-[#ff5252] bg-[#ff525220]"
+                    : "border-[#2e2e50] text-[#8888aa]",
+                ].join(" ")}
+              >
+                {s.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+        {[
+          { label: "Strike Price", value: strike,    set: setStrike },
+          { label: "Premium / share", value: premium, set: setPremium },
+          { label: "Contracts",    value: contracts, set: setContracts },
+        ].map(({ label, value, set }) => (
+          <div key={label}>
+            <label className="text-[10px] text-[#555570] uppercase block mb-1">{label}</label>
+            <input
+              type="number"
+              value={value}
+              onChange={e => set(e.target.value)}
+              className="w-24 bg-[#0d0d14] border border-[#2e2e50] rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-[#448aff]"
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-4 text-center text-xs">
+        <div className="bg-[#0d0d14] rounded-lg p-2">
+          <p className="text-[#555570] mb-0.5">Breakeven</p>
+          <p className="font-bold text-white">${breakeven.toFixed(2)}</p>
+        </div>
+        <div className="bg-[#0d0d14] rounded-lg p-2">
+          <p className="text-[#555570] mb-0.5">Max Loss</p>
+          <p className="font-bold text-[#ff5252]">-${maxLoss.toLocaleString()}</p>
+        </div>
+        <div className="bg-[#0d0d14] rounded-lg p-2">
+          <p className="text-[#555570] mb-0.5">Max Gain</p>
+          <p className="font-bold text-[#00e676]">{maxGain}</p>
+        </div>
+      </div>
+
+      {chartData.length > 0 && (
+        <ResponsiveContainer width="100%" height={160}>
+          <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#2e2e50" />
+            <XAxis dataKey="price" tick={{ fill: "#555570", fontSize: 9 }} tickLine={false}
+              interval={4} tickFormatter={v => `$${v}`} />
+            <YAxis tick={{ fill: "#8888aa", fontSize: 9 }} tickLine={false} width={48}
+              tickFormatter={v => `$${v >= 0 ? "" : "-"}${Math.abs(v).toLocaleString()}`} />
+            <ReferenceLine y={0} stroke="#555570" strokeDasharray="4 2" />
+            <Tooltip
+              formatter={(v: number) => [`$${v.toLocaleString()}`, "P&L"]}
+              contentStyle={{ backgroundColor: "#1a1a2e", border: "1px solid #2e2e50", borderRadius: 8, fontSize: 11 }}
+              labelFormatter={v => `Underlying: $${v}`}
+            />
+            <Bar
+              dataKey="pnl"
+              radius={[2, 2, 0, 0]}
+              fill="#00e676"
+              isAnimationActive={false}
+              // Color positive green, negative red per bar
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function OptionsPage() {
   const [data,       setData]       = useState<OptionsScreenerResponse | null>(null);
@@ -466,6 +598,12 @@ export default function OptionsPage() {
                   />
                 </div>
               )}
+
+              {/* Options P&L Calculator */}
+              <OptionsPnlCalc
+                price={selected.price}
+                signalType={selected.signal_type}
+              />
 
               {/* RSI + PCR chart */}
               {histLoading && (

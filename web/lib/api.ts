@@ -1,4 +1,4 @@
-import type { NewsItem, PcrHistoryResponse, RelatedResponse, WeeklySignalsResponse, WeeklyHistoryResponse, OptionsScreenerResponse, OptionsHistoryResponse, OptionsOverview, DbStatus, BrokerStatus, BrokerBalance, Position, BrokerOrder, TradeRow } from "./types";
+import type { NewsItem, PcrHistoryResponse, RelatedResponse, WeeklySignalsResponse, WeeklyHistoryResponse, OptionsScreenerResponse, OptionsHistoryResponse, OptionsOverview, DbStatus, BrokerStatus, BrokerBalance, Position, BrokerOrder, TradeRow, OhlcvResponse, OptionsBacktestResult, SignalsBacktestResult, TwsUniverse, TwsStock } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 const INTERNAL_SECRET = process.env.NEXT_PUBLIC_INTERNAL_SECRET ?? "";
@@ -119,6 +119,55 @@ export const brokerTrades    = (params?: { limit?: number; ticker?: string; stat
 };
 export const brokerTickerTrades = (ticker: string): Promise<{ ticker: string; count: number; trades: TradeRow[] }> =>
   get(`/api/broker/trades/${encodeURIComponent(ticker)}`, brokerHeaders());
+// ── TWS Stock Management ──────────────────────────────────────────────────────
+
+export const twsUniverse = (params?: {
+  signal_only?: boolean;
+  sector?:      string;
+  q?:           string;
+  sort_by?:     string;
+  limit?:       number;
+}): Promise<TwsUniverse> => {
+  const p = new URLSearchParams();
+  if (params?.signal_only) p.set("signal_only", "true");
+  if (params?.sector)      p.set("sector",      params.sector);
+  if (params?.q)           p.set("q",           params.q);
+  if (params?.sort_by)     p.set("sort_by",     params.sort_by);
+  if (params?.limit)       p.set("limit",       String(params.limit));
+  return get(`/api/tws/universe?${p}`);
+};
+
+export const twsStock = (ticker: string): Promise<TwsStock> =>
+  get(`/api/tws/stock/${encodeURIComponent(ticker)}`);
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+
+export const chartOhlcv = (ticker: string, period = "3mo", market = "US"): Promise<OhlcvResponse> =>
+  get(`/api/charts/ohlcv/${encodeURIComponent(ticker)}?period=${period}&market=${market}`);
+
+// ── Backtesting ───────────────────────────────────────────────────────────────
+
+export const backtestOptions = (): Promise<OptionsBacktestResult> =>
+  get("/api/backtest/options");
+
+export const backtestSignals = (params: {
+  start_date?:      string;
+  end_date?:        string;
+  holding_days?:    number;
+  stop_loss_pct?:   number;
+  take_profit_pct?: number;
+  max_tickers?:     number;
+}): Promise<SignalsBacktestResult> => {
+  const p = new URLSearchParams();
+  if (params.start_date)      p.set("start_date",      params.start_date);
+  if (params.end_date)        p.set("end_date",        params.end_date);
+  if (params.holding_days)    p.set("holding_days",    String(params.holding_days));
+  if (params.stop_loss_pct)   p.set("stop_loss_pct",   String(params.stop_loss_pct));
+  if (params.take_profit_pct) p.set("take_profit_pct", String(params.take_profit_pct));
+  if (params.max_tickers)     p.set("max_tickers",     String(params.max_tickers));
+  return get(`/api/backtest/signals?${p}`);
+};
+
 export const brokerPlaceOrder = (body: {
   ticker: string; side: string; qty: number; limit_price: number; signal_source?: string;
 }): Promise<{ trade: TradeRow; message: string; dry_run: boolean }> =>
