@@ -1,4 +1,4 @@
-import type { NewsItem, PcrHistoryResponse, RelatedResponse, WeeklySignalsResponse, WeeklyHistoryResponse, OptionsScreenerResponse, OptionsHistoryResponse, OptionsOverview, DbStatus, BrokerStatus, BrokerBalance, Position, BrokerOrder, TradeRow, OhlcvResponse, OptionsBacktestResult, SignalsBacktestResult, TwsUniverse, TwsStock } from "./types";
+import type { NewsItem, PcrHistoryResponse, RelatedResponse, WeeklySignalsResponse, WeeklyHistoryResponse, OptionsScreenerResponse, OptionsHistoryResponse, OptionsOverview, DbStatus, BrokerStatus, BrokerBalance, Position, BrokerOrder, TradeRow, OhlcvResponse, OptionsBacktestResult, SignalsBacktestResult, TwsUniverse, TwsStock, AccountSnapshot, OptionsChainResponse } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 const INTERNAL_SECRET = process.env.NEXT_PUBLIC_INTERNAL_SECRET ?? "";
@@ -105,16 +105,17 @@ export const optionsDbStatus = (): Promise<DbStatus> =>
 // ── Broker / Trading ──────────────────────────────────────────────────────────
 
 export const brokerStatus    = (): Promise<BrokerStatus>  => get("/api/broker/status", brokerHeaders());
-export const brokerBalance   = (): Promise<BrokerBalance> => get("/api/broker/balance", brokerHeaders());
-export const brokerPositions = (): Promise<Position[]>    => get("/api/broker/positions", brokerHeaders());
-export const brokerOrders    = (days = 7): Promise<BrokerOrder[]> =>
-  get(`/api/broker/orders?days=${days}`, brokerHeaders());
-export const brokerTrades    = (params?: { limit?: number; ticker?: string; status?: string; days?: number }): Promise<TradeRow[]> => {
+export const brokerBalance   = (market = "TW"): Promise<BrokerBalance> => get(`/api/broker/balance?market=${market}`, brokerHeaders());
+export const brokerPositions = (market = "TW"): Promise<Position[]>    => get(`/api/broker/positions?market=${market}`, brokerHeaders());
+export const brokerOrders    = (days = 7, market = "TW"): Promise<BrokerOrder[]> =>
+  get(`/api/broker/orders?days=${days}&market=${market}`, brokerHeaders());
+export const brokerTrades    = (params?: { limit?: number; ticker?: string; status?: string; days?: number; market?: string }): Promise<TradeRow[]> => {
   const p = new URLSearchParams();
   if (params?.limit)  p.set("limit",  String(params.limit));
   if (params?.ticker) p.set("ticker", params.ticker);
   if (params?.status) p.set("status", params.status);
   if (params?.days)   p.set("days",   String(params.days));
+  if (params?.market) p.set("market", params.market);
   return get(`/api/broker/trades?${p}`, brokerHeaders());
 };
 export const brokerTickerTrades = (ticker: string): Promise<{ ticker: string; count: number; trades: TradeRow[] }> =>
@@ -171,7 +172,16 @@ export const backtestSignals = (params: {
   return get(`/api/backtest/signals?${p}`);
 };
 
+export const brokerAssetHistory = (market = "TW", days = 90): Promise<AccountSnapshot[]> =>
+  get(`/api/broker/asset-history?market=${market}&days=${days}`, brokerHeaders());
+
+export const brokerOptionsChain = (ticker: string, expiry?: string): Promise<OptionsChainResponse> => {
+  const p = new URLSearchParams({ ticker: ticker.toUpperCase() });
+  if (expiry) p.set("expiry", expiry);
+  return get(`/api/broker/options-chain?${p}`, brokerHeaders());
+};
+
 export const brokerPlaceOrder = (body: {
-  ticker: string; side: string; qty: number; limit_price: number; signal_source?: string;
+  ticker: string; side: string; qty: number; limit_price: number; market?: string; signal_source?: string;
 }): Promise<{ trade: TradeRow; message: string; dry_run: boolean }> =>
   post("/api/broker/order", body, brokerHeaders());

@@ -57,11 +57,14 @@ class User(Base):
 class Subscriber(Base):
     __tablename__ = "subscribers"
 
-    id            = Column(Integer, primary_key=True, autoincrement=True)
-    telegram_id   = Column(String(255), unique=True, index=True, nullable=False)
-    label         = Column(String(255), nullable=True)
-    active        = Column(Boolean, default=True, nullable=False)
-    subscribed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_id     = Column(String(255), unique=True, index=True, nullable=False)
+    label           = Column(String(255), nullable=True)
+    active          = Column(Boolean, default=True, nullable=False)
+    tier            = Column(String(10), nullable=False, default="free")  # "free" | "pro"
+    tier_expires_at = Column(DateTime, nullable=True)   # null = perpetual pro
+    editorial_note  = Column(String(512), nullable=True)  # admin notes shown on pro Telegram digests
+    subscribed_at   = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # ── Bets (Oracle daily Bull/Bear) ─────────────────────────────────────────────
@@ -262,6 +265,21 @@ class Trade(Base):
     signal_source   = Column(String(50), nullable=True)                  # weekly | options | manual
     executed_at     = Column(DateTime, nullable=True)
     created_at      = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AccountSnapshot(Base):
+    """Daily balance snapshot — builds asset history passively on every /balance fetch."""
+    __tablename__ = "account_snapshots"
+    __table_args__ = (UniqueConstraint("market", "snapshot_date", name="uq_account_snapshot_market_date"),)
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    market         = Column(String(10), nullable=False, index=True)   # "TW" | "US"
+    snapshot_date  = Column(String(10), nullable=False, index=True)   # YYYY-MM-DD
+    cash           = Column(Float, nullable=True)
+    total_value    = Column(Float, nullable=True)
+    unrealized_pnl = Column(Float, nullable=True)
+    currency       = Column(String(10), nullable=True)
+    created_at     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class TwsStockCache(Base):

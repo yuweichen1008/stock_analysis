@@ -207,6 +207,61 @@ class MoomooClient(BrokerClient):
             return {"success": False, "order_id": "", "message": str(e)}
 
     # ------------------------------------------------------------------
+    # Options chain
+    # ------------------------------------------------------------------
+
+    def get_options_chain(self, ticker: str, expiry: str | None = None) -> list[dict]:
+        """
+        Fetch options chain via OpenQuoteContext (separate from trade context).
+        Returns a list of contract dicts: strike, expiry, type, bid, ask, iv, delta, etc.
+        """
+        try:
+            import moomoo as ft
+            code = f"US.{ticker.upper()}"
+            with ft.OpenQuoteContext(host=self._host, port=self._port) as qctx:
+                # Resolve expiry: use provided or pick nearest future date
+                target_expiry = expiry
+                if not target_expiry:
+                    ret, dates_df = qctx.get_option_expiration_date(code=code)
+                    if ret != ft.RET_OK or dates_df is None or dates_df.empty:
+                        logger.warning("Moomoo: no option expiry dates for %s", code)
+                        return []
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    future = dates_df[dates_df["time"] >= today]
+                    target_expiry = (
+                        future.iloc[0]["time"] if not future.empty else dates_df.iloc[0]["time"]
+                    )
+
+                ret, chain_df = qctx.get_option_chain(
+                    code=code,
+                    start=target_expiry,
+                    end=target_expiry,
+                )
+                if ret != ft.RET_OK or chain_df is None or chain_df.empty:
+                    logger.warning("Moomoo get_option_chain failed for %s %s: %s", code, target_expiry, chain_df)
+                    return []
+
+                contracts = []
+                for _, row in chain_df.iterrows():
+                    contracts.append({
+                        "code":     str(row.get("code",               "")),
+                        "expiry":   str(row.get("strike_time",        target_expiry))[:10],
+                        "strike":   float(row.get("strike_price",     0) or 0),
+                        "type":     str(row.get("option_type",        "")).upper(),
+                        "bid":      float(row.get("bid_price",        0) or 0),
+                        "ask":      float(row.get("ask_price",        0) or 0),
+                        "last":     float(row.get("last_price",       0) or 0),
+                        "volume":   int(row.get("volume",             0) or 0),
+                        "open_int": int(row.get("open_interest",      0) or 0),
+                        "iv":       float(row.get("implied_volatility", 0) or 0),
+                        "delta":    float(row.get("delta",            0) or 0),
+                    })
+                return contracts
+        except Exception as e:
+            logger.warning("Moomoo get_options_chain error: %s", e)
+            return []
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

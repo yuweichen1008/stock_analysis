@@ -6,8 +6,8 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import type { TwsStock, TwsUniverse, OhlcvResponse } from "@/lib/types";
-import { twsUniverse, twsStock, twsLookup, chartOhlcv } from "@/lib/api";
+import type { TwsStock, TwsUniverse, OhlcvResponse, BrokerBalance, Position } from "@/lib/types";
+import { twsUniverse, twsStock, twsLookup, chartOhlcv, brokerBalance, brokerPositions } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -507,6 +507,8 @@ export default function TwsPage() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupResult,  setLookupResult]  = useState<TwsStock | null>(null);
   const [lookupError,   setLookupError]   = useState<string | null>(null);
+  const [ctbcBalance,   setCtbcBalance]   = useState<BrokerBalance | null>(null);
+  const [ctbcPositions, setCtbcPositions] = useState<Position[]>([]);
 
   // Filters & sort
   const [search,    setSearch]    = useState("");
@@ -514,7 +516,8 @@ export default function TwsPage() {
   const [sector,    setSector]    = useState("");
   const [sortBy,    setSortBy]    = useState<SortKey>("signal");
 
-  const searchRef = useRef<HTMLInputElement>(null);
+  const searchRef  = useRef<HTMLInputElement>(null);
+  const didAutoLoad = useRef(false);
 
   const load = useCallback(async (q = "", cat: FilterCat = "all", sec = "", sort: SortKey = "signal") => {
     setLoading(true);
@@ -527,9 +530,10 @@ export default function TwsPage() {
         limit:       300,
       });
       setUniverse(data);
-      // High-value filter is client-side (server returns all when not signal_only)
-      if (!selected && data.stocks.length > 0) {
-        setSelected(data.stocks[0]);
+      // Prefer 2330 (TSMC) as the default selection, fall back to first stock
+      if (!selected) {
+        const tsmc = data.stocks.find(s => s.ticker === "2330") ?? data.stocks[0];
+        if (tsmc) setSelected(tsmc);
       }
     } catch {
       setUniverse(null);
@@ -539,6 +543,23 @@ export default function TwsPage() {
   }, [selected]);
 
   useEffect(() => { load(); }, []);
+
+  // If 2330 not in universe after initial load, auto-fetch it
+  useEffect(() => {
+    if (loading || !universe || didAutoLoad.current) return;
+    didAutoLoad.current = true;
+    if (!universe.stocks.find(s => s.ticker === "2330")) {
+      twsLookup("2330").then(r => {
+        if (!(r as any).error) { setLookupResult(r); setSelected(r); }
+      }).catch(() => {});
+    }
+  }, [loading, universe]);
+
+  // Fetch CTBC account data on mount (silent fail)
+  useEffect(() => {
+    brokerBalance("TW").then(setCtbcBalance).catch(() => {});
+    brokerPositions("TW").then(setCtbcPositions).catch(() => {});
+  }, []);
 
   const handleSearch = (q: string) => {
     setSearch(q);
@@ -563,6 +584,8 @@ export default function TwsPage() {
   const handleLookup = async () => {
     const q = search.trim().toUpperCase();
     if (!q) return;
+    const inRegistry = !!universeStocks.find(s => s.ticker === q);
+    console.log(`[TWS lookup] ticker=${q} inRegistry=${inRegistry}`);
     setLookupLoading(true);
     setLookupError(null);
     try {
@@ -682,6 +705,44 @@ export default function TwsPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left: stock list */}
         <aside className="w-72 shrink-0 border-r border-[#2e2e50] flex flex-col overflow-hidden bg-[#0d0d14]">
+          {/* CTBC account summary */}
+          {ctbcBalance && (
+            <div className="shrink-0 px-3 py-2 border-b border-[#2e2e50] bg-[#111128]">
+              <p className="text-[9px] text-[#555570] uppercase tracking-wide mb-1.5">💳 CTBC 帳戶</p>
+              <div className="flex gap-4 mb-2">
+                <div>
+                  <p className="text-[8px] text-[#555570]">總資產</p>
+                  <p className="text-xs font-bold text-white">{NT(ctbcBalance.total_value)}</p>
+                </div>
+                <div>
+                  <p className="text-[8px] text-[#555570]">可用現金</p>
+                  <p className="text-xs font-bold text-white">{NT(ctbcBalance.cash)}</p>
+                </div>
+                <div>
+                  <p className="text-[8px] text-[#555570]">未實現損益</p>
+                  <p className="text-xs font-bold" style={{ color: (ctbcBalance.unrealized_pnl ?? 0) >= 0 ? "#ff5252" : "#00e676" }}>
+                    {ctbcBalance.unrealized_pnl >= 0 ? "+" : ""}{NT(ctbcBalance.unrealized_pnl)}
+                  </p>
+                </div>
+              </div>
+              {ctbcPositions.length > 0 && (
+                <div className="space-y-0.5">
+                  {ctbcPositions.slice(0, 3).map(p => (
+                    <div key={p.ticker} className="flex items-center justify-between text-[10px]">
+                      <span className="text-white font-bold">{p.ticker}</span>
+                      <span className="text-[#8888aa]">{p.qty.toLocaleString()}股</span>
+                      <span style={{ color: (p.pnl ?? 0) >= 0 ? "#ff5252" : "#00e676" }}>
+                        {(p.pnl ?? 0) >= 0 ? "+" : ""}{NT(p.pnl)}
+                      </span>
+                    </div>
+                  ))}
+                  {ctbcPositions.length > 3 && (
+                    <p className="text-[8px] text-[#555570] text-right">+{ctbcPositions.length - 3} 更多</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex-1 overflow-y-auto">
             {loading && (
               <div className="space-y-px pt-1">

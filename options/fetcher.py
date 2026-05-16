@@ -36,7 +36,7 @@ def _compute_rsi(closes: "pd.Series", period: int = 14) -> float | None:
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
+    return float(round(100 - (100 / (1 + rs)), 2))
 
 
 def _iv_rank(ticker: str, today_iv: float, db) -> float | None:
@@ -144,17 +144,17 @@ def fetch_options_metrics(ticker: str, db, snapshot_at: datetime) -> dict | None
         return {
             "ticker":          ticker,
             "snapshot_at":     snapshot_at,
-            "price":           price,
-            "price_change_1d": price_change_1d,
-            "rsi_14":          rsi_14,
-            "pcr":             pcr,
+            "price":           float(price),
+            "price_change_1d": float(price_change_1d) if price_change_1d is not None else None,
+            "rsi_14":          float(rsi_14) if rsi_14 is not None else None,
+            "pcr":             float(pcr),
             "pcr_label":       _pcr_label(pcr),
-            "put_volume":      put_vol_total,
-            "call_volume":     call_vol_total,
-            "avg_iv":          avg_iv,
-            "iv_rank":         iv_rank,
-            "total_oi":        oi_total,
-            "volume_oi_ratio": volume_oi_ratio,
+            "put_volume":      int(put_vol_total),
+            "call_volume":     int(call_vol_total),
+            "avg_iv":          float(avg_iv) if avg_iv is not None else None,
+            "iv_rank":         float(iv_rank) if iv_rank is not None else None,
+            "total_oi":        int(oi_total),
+            "volume_oi_ratio": float(volume_oi_ratio) if volume_oi_ratio is not None else None,
         }
 
     except Exception as exc:

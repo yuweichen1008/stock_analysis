@@ -4,6 +4,7 @@ Push notification endpoints — Expo Push token registration + broadcast.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,12 +15,33 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+import os
+
 from api.auth import require_internal
 from api.db import User, get_db
 from api.push_service import send_push
 from tws.index_tracker import _load_history, oracle_stats
 
 router = APIRouter(prefix="/api/notify", tags=["notify"])
+
+
+def _tg_send_raw(chat_id: str, text: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return
+    try:
+        import urllib.request, json as _json
+        payload = _json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=8)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Telegram send failed for %s: %s", chat_id, exc)
 
 
 class RegisterTokenBody(BaseModel):
@@ -174,8 +196,89 @@ def broadcast(body: BroadcastBody, db: Session = Depends(get_db), _: None = Depe
             },
         )
 
+    elif body.type == "market_insights":
+        from api.db import Subscriber, OptionsSignal, WeeklySignal
+        from datetime import date
+        from sqlalchemy import func as sqlfunc
+
+        now_utc = datetime.now(timezone.utc)  # type: ignore[attr-defined]
+        subs = db.query(Subscriber).filter(Subscriber.active == True).all()  # noqa: E712
+        if not subs:
+            return {"ok": False, "reason": "no active subscribers"}
+
+        # ── options signals summary ──
+        latest_snap = db.query(sqlfunc.max(OptionsSignal.snapshot_at)).scalar()
+        buy_count = sell_count = unusual_count = 0
+        top_opts: list[str] = []
+        if latest_snap:
+            rows = (
+                db.query(OptionsSignal)
+                .filter(
+                    OptionsSignal.snapshot_at == latest_snap,
+                    OptionsSignal.signal_type.isnot(None),
+                )
+                .order_by(OptionsSignal.signal_score.desc())
+                .limit(5)
+                .all()
+            )
+            for r in rows:
+                if r.signal_type == "buy_signal":    buy_count += 1
+                elif r.signal_type == "sell_signal": sell_count += 1
+                else:                                unusual_count += 1
+                rsi_s = f"RSI={r.rsi_14:.0f}" if r.rsi_14 is not None else ""
+                pcr_s = f"PCR={r.pcr:.2f}"    if r.pcr   is not None else ""
+                icon  = "🟢" if r.signal_type == "buy_signal" else ("🔴" if r.signal_type == "sell_signal" else "⚡")
+                top_opts.append(f"{icon} {r.ticker}  {rsi_s} {pcr_s}".strip())
+
+        # ── weekly signals summary ──
+        this_week = db.query(WeeklySignal).filter(
+            WeeklySignal.signal_type.isnot(None)
+        ).order_by(WeeklySignal.created_at.desc()).limit(5).all()
+        top_weekly: list[str] = []
+        for r in this_week:
+            icon = "📈" if r.signal_type == "buy" else "📉"
+            top_weekly.append(f"{icon} {r.ticker}  {r.return_pct:+.1f}%")
+
+        date_str = now_utc.strftime("%Y-%m-%d")
+
+        def _build_free_msg() -> str:
+            lines = [f"📊 *LokiStock 市場速報* — {date_str}\n"]
+            if top_opts:
+                lines.append("*選擇權訊號*")
+                lines.extend(top_opts[:3])
+            if top_weekly:
+                lines.append("\n*週訊號*")
+                lines.extend(top_weekly[:3])
+            lines.append(
+                f"\n訊號統計：買入 {buy_count} | 賣出 {sell_count} | 異常活躍 {unusual_count}"
+            )
+            lines.append("\n🤖 _LokiStock Oracle · 僅供參考，非投資建議_")
+            return "\n".join(lines)
+
+        def _build_pro_msg(sub: Subscriber) -> str:
+            base = _build_free_msg()
+            note = getattr(sub, "editorial_note", None)
+            editorial = (
+                f"\n\n📝 *編輯評論*\n{note}"
+                if note else
+                "\n\n📝 *編輯評論*\n目前市場情緒中性，建議觀望，等待明確趨勢確認。VIX 維持低檔，PCR 接近均值，短期方向不明。"
+            )
+            return base + editorial + "\n\n🌟 _Pro 會員專屬 · 感謝支持 LokiStock_"
+
+        sent_free = sent_pro = 0
+        for sub in subs:
+            tier = getattr(sub, "tier", "free")
+            tier_exp = getattr(sub, "tier_expires_at", None)
+            is_pro = (tier == "pro") and (tier_exp is None or tier_exp.replace(tzinfo=timezone.utc) > now_utc)  # type: ignore[attr-defined]
+            msg = _build_pro_msg(sub) if is_pro else _build_free_msg()
+            _tg_send_raw(sub.telegram_id, msg)
+            if is_pro: sent_pro += 1
+            else:      sent_free += 1
+
+        result = {"ok": True, "sent_free": sent_free, "sent_pro": sent_pro}
+
     else:
-        raise HTTPException(400, "type must be 'morning', 'result', or 'options_signals'")
+        raise HTTPException(400, "type must be 'morning', 'result', 'options_signals', or 'market_insights'")
 
     return result
 

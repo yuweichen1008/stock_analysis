@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import requests as _requests
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from typing import Optional
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from api.config import settings
 from api.db import Subscriber, get_db
 
 router = APIRouter(tags=["subscribe"])
@@ -51,6 +53,19 @@ def _tg_send(chat_id: str, text: str) -> bool:
 class SubscribeBody(BaseModel):
     telegram_id: str
     label:       Optional[str] = None
+
+
+class UpgradeBody(BaseModel):
+    telegram_id:     str
+    tier:            str = "pro"          # "free" | "pro"
+    days:            Optional[int] = None  # None = perpetual
+    editorial_note:  Optional[str] = None
+
+
+def _require_internal(request: Request) -> None:
+    key = request.headers.get("X-Internal-Secret", "")
+    if key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # ── HTML subscribe page ───────────────────────────────────────────────────────
@@ -317,6 +332,78 @@ def list_subscribers(db: Session = Depends(get_db)):
     """List all active Telegram subscribers."""
     subs = db.query(Subscriber).filter(Subscriber.active == True).all()
     return [
-        {"id": s.id, "telegram_id": s.telegram_id, "label": s.label, "since": s.subscribed_at}
+        {
+            "id":         s.id,
+            "telegram_id": s.telegram_id,
+            "label":      s.label,
+            "tier":       getattr(s, "tier", "free"),
+            "since":      s.subscribed_at,
+        }
         for s in subs
     ]
+
+
+@router.get("/api/subscribe/status/{telegram_id}")
+def subscriber_status(telegram_id: str, db: Session = Depends(get_db)):
+    """Check subscription tier and expiry for a given Telegram ID."""
+    sub = db.query(Subscriber).filter(Subscriber.telegram_id == telegram_id).first()
+    if not sub or not sub.active:
+        raise HTTPException(404, "Subscriber not found")
+    now = datetime.now(timezone.utc)
+    tier = getattr(sub, "tier", "free")
+    expires_at = getattr(sub, "tier_expires_at", None)
+    is_pro = (tier == "pro") and (expires_at is None or expires_at.replace(tzinfo=timezone.utc) > now)
+    return {
+        "telegram_id":  sub.telegram_id,
+        "label":        sub.label,
+        "tier":         "pro" if is_pro else "free",
+        "tier_expires_at": expires_at.isoformat() if expires_at else None,
+        "editorial_note":  getattr(sub, "editorial_note", None),
+        "subscribed_at":   sub.subscribed_at.isoformat() if sub.subscribed_at else None,
+    }
+
+
+@router.post("/api/subscribe/upgrade")
+def upgrade_subscriber(
+    body: UpgradeBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_internal),
+):
+    """Upgrade or downgrade a subscriber's tier. Requires X-Internal-Secret header."""
+    sub = db.query(Subscriber).filter(Subscriber.telegram_id == body.telegram_id).first()
+    if not sub:
+        raise HTTPException(404, "Subscriber not found")
+
+    sub.tier = body.tier
+    if body.days is not None:
+        sub.tier_expires_at = datetime.now(timezone.utc) + timedelta(days=body.days)
+    else:
+        sub.tier_expires_at = None  # perpetual
+
+    if body.editorial_note is not None:
+        sub.editorial_note = body.editorial_note
+
+    db.commit()
+
+    if body.tier == "pro":
+        _tg_send(
+            body.telegram_id,
+            "🌟 *LokiStock Pro 已啟用！*\n\n"
+            "你現在可以享有：\n"
+            "• 即時選擇權市場洞察\n"
+            "• 每日專業市場解析 + 編輯評論\n"
+            "• Option Snipe 即時觸發通知\n"
+            "• 優先客服支援\n\n"
+            "歡迎加入 Pro 社群！🚀",
+        )
+
+    return {"ok": True, "tier": sub.tier, "telegram_id": sub.telegram_id}
+
+
+@router.get("/api/subscribe/count")
+def subscriber_count(db: Session = Depends(get_db)):
+    """Public endpoint — returns active subscriber count for display on landing page."""
+    total = db.query(Subscriber).filter(Subscriber.active == True).count()
+    pro   = db.query(Subscriber).filter(Subscriber.active == True, Subscriber.tier == "pro").count()
+    return {"total": total, "pro": pro}

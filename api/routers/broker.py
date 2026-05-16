@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from api.config import settings
-from api.db import Trade, get_db
+from api.db import AccountSnapshot, Trade, get_db
 from api.services.broker_service import (
     ctbc_call, ctbc_is_configured, ctbc_is_dry_run, get_ctbc,
 )
@@ -141,17 +141,44 @@ def _assert_us():
 
 # ── GET /balance ──────────────────────────────────────────────────────────────
 
+def _save_snapshot(db: Session, market: str, balance: dict) -> None:
+    """Upsert a daily balance snapshot; silently ignores conflicts and errors."""
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        existing = (
+            db.query(AccountSnapshot)
+            .filter(AccountSnapshot.market == market, AccountSnapshot.snapshot_date == today)
+            .first()
+        )
+        if not existing:
+            db.add(AccountSnapshot(
+                market         = market,
+                snapshot_date  = today,
+                cash           = balance.get("cash"),
+                total_value    = balance.get("total_value"),
+                unrealized_pnl = balance.get("unrealized_pnl"),
+                currency       = balance.get("currency"),
+            ))
+            db.commit()
+    except Exception as exc:
+        logger.warning("account snapshot write failed: %s", exc)
+        db.rollback()
+
+
 @router.get("/balance")
 async def broker_balance(
-    market: str = Query(default="TW", description="TW = CTBC, US = Moomoo"),
-    _: None = Depends(_require_internal),
+    market: str     = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    _:      None    = Depends(_require_internal),
+    db:     Session = Depends(get_db),
 ):
     if market.upper() == "US":
         _assert_us()
         try:
             client = get_moomoo()
             balance = await moomoo_call(client.get_balance)
-            return balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "USD"}
+            balance = balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "USD"}
+            _save_snapshot(db, "US", balance)
+            return balance
         except Exception as exc:
             logger.warning("moomoo balance error: %s", exc)
             raise HTTPException(503, f"Moomoo unavailable: {exc}")
@@ -160,7 +187,9 @@ async def broker_balance(
         try:
             client = get_ctbc()
             balance = await ctbc_call(client.get_balance)
-            return balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "TWD"}
+            balance = balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "TWD"}
+            _save_snapshot(db, "TW", balance)
+            return balance
         except Exception as exc:
             logger.warning("ctbc balance error: %s", exc)
             raise HTTPException(503, f"CTBC unavailable: {exc}")
@@ -339,3 +368,51 @@ def broker_ticker_trades(
         "count":  len(rows),
         "trades": [TradeOut.from_orm(r) for r in rows],
     }
+
+
+# ── GET /asset-history ────────────────────────────────────────────────────────
+
+@router.get("/asset-history")
+def broker_asset_history(
+    market: str     = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    days:   int     = Query(default=90, ge=1, le=365),
+    db:     Session = Depends(get_db),
+    _:      None    = Depends(_require_internal),
+):
+    """Return daily balance snapshots (builds passively as user opens the platform)."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = (
+        db.query(AccountSnapshot)
+        .filter(AccountSnapshot.market == market.upper(), AccountSnapshot.snapshot_date >= since)
+        .order_by(AccountSnapshot.snapshot_date.asc())
+        .all()
+    )
+    return [
+        {
+            "date":          r.snapshot_date,
+            "total_value":   r.total_value,
+            "cash":          r.cash,
+            "unrealized_pnl": r.unrealized_pnl,
+            "currency":      r.currency,
+        }
+        for r in rows
+    ]
+
+
+# ── GET /options-chain ────────────────────────────────────────────────────────
+
+@router.get("/options-chain")
+async def broker_options_chain(
+    ticker: str            = Query(...,      description="US stock ticker e.g. AAPL"),
+    expiry: Optional[str]  = Query(default=None, description="YYYY-MM-DD; default=nearest expiry"),
+    _:      None           = Depends(_require_internal),
+):
+    """Fetch Moomoo options chain for a US stock via OpenQuoteContext."""
+    _assert_us()
+    try:
+        client = get_moomoo()
+        contracts = await moomoo_call(client.get_options_chain, ticker, expiry)
+        return {"ticker": ticker.upper(), "expiry": expiry, "contracts": contracts or []}
+    except Exception as exc:
+        logger.warning("options-chain error for %s: %s", ticker, exc)
+        raise HTTPException(503, f"Moomoo unavailable: {exc}")

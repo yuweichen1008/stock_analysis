@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { BrokerStatus, BrokerBalance, Position, BrokerOrder, TradeRow } from "@/lib/types";
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import type { BrokerStatus, BrokerBalance, Position, BrokerOrder, TradeRow, AccountSnapshot, OptionsContract, OptionsChainResponse } from "@/lib/types";
 import {
   brokerStatus, brokerBalance, brokerPositions, brokerOrders,
-  brokerTrades, brokerPlaceOrder,
+  brokerTrades, brokerPlaceOrder, brokerAssetHistory, brokerOptionsChain,
 } from "@/lib/api";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -55,20 +56,23 @@ function StatusBadge({ status }: { status: BrokerStatus | null; loading: boolean
 }
 
 function AccountBar({
-  balance, status, loading, onRefresh,
+  balance, status, loading, onRefresh, market = "TW",
 }: {
   balance: BrokerBalance | null;
   status:  BrokerStatus  | null;
   loading: boolean;
   onRefresh: () => void;
+  market?: string;
 }) {
+  const ccy = balance?.currency === "USD" ? "US$" : "NT$";
+  const broker = market === "US" ? "Moomoo" : "CTBC";
   return (
     <div className="flex flex-wrap items-center gap-6 px-4 py-3 bg-[#111128] border-b border-[#2e2e50] text-sm">
       <div>
         <span className="text-[#8888aa]">Cash </span>
         {loading ? <Skeleton /> : (
           <span className="font-bold text-white">
-            {balance ? `NT$ ${fmt(balance.cash)}` : "—"}
+            {balance ? `${ccy} ${fmt(balance.cash)}` : "—"}
           </span>
         )}
       </div>
@@ -76,7 +80,7 @@ function AccountBar({
         <span className="text-[#8888aa]">Total Value </span>
         {loading ? <Skeleton /> : (
           <span className="font-bold text-white">
-            {balance ? `NT$ ${fmt(balance.total_value)}` : "—"}
+            {balance ? `${ccy} ${fmt(balance.total_value)}` : "—"}
           </span>
         )}
       </div>
@@ -84,12 +88,12 @@ function AccountBar({
         <span className="text-[#8888aa]">Unrealized P&L </span>
         {loading ? <Skeleton /> : (
           <span className={`font-bold ${pnlClass(balance?.unrealized_pnl)}`}>
-            {balance ? `NT$ ${fmt(balance.unrealized_pnl)}` : "—"}
+            {balance ? `${ccy} ${fmt(balance.unrealized_pnl)}` : "—"}
           </span>
         )}
       </div>
       <div className="flex items-center gap-2">
-        <span className="text-[#8888aa]">CTBC</span>
+        <span className="text-[#8888aa]">{broker}</span>
         <StatusBadge status={status} loading={loading} />
       </div>
       <button
@@ -153,13 +157,26 @@ function PositionsTable({ positions, loading }: { positions: Position[]; loading
 
 function OrderForm({
   onOrderPlaced,
+  market = "TW",
+  prefillTicker = "",
+  prefillPrice  = "",
+  onClearPrefill,
 }: {
-  onOrderPlaced: (msg: string, isDry: boolean) => void;
+  onOrderPlaced:  (msg: string, isDry: boolean) => void;
+  market?:        string;
+  prefillTicker?: string;
+  prefillPrice?:  string;
+  onClearPrefill?: () => void;
 }) {
-  const [ticker,     setTicker]     = useState("");
+  const [ticker,     setTicker]     = useState(prefillTicker);
   const [side,       setSide]       = useState<"buy" | "sell">("buy");
   const [qty,        setQty]        = useState("");
-  const [price,      setPrice]      = useState("");
+  const [price,      setPrice]      = useState(prefillPrice);
+
+  useEffect(() => {
+    if (prefillTicker) setTicker(prefillTicker);
+    if (prefillPrice)  setPrice(prefillPrice);
+  }, [prefillTicker, prefillPrice]);
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error,      setError]      = useState<string | null>(null);
@@ -179,10 +196,12 @@ function OrderForm({
         side,
         qty:          parseFloat(qty),
         limit_price:  parseFloat(price),
+        market,
         signal_source: "manual",
       });
       setConfirming(false);
       setTicker(""); setQty(""); setPrice("");
+      onClearPrefill?.();
       onOrderPlaced(result.message, result.dry_run);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Order failed");
@@ -295,7 +314,9 @@ function OrderForm({
       >
         Place {side.toUpperCase()} Order
       </button>
-      <p className="text-xs text-[#555570]">LIMIT orders only · Powered by CTBC Win168</p>
+      <p className="text-xs text-[#555570]">
+        LIMIT orders only · {market === "US" ? "Moomoo OpenD" : "CTBC Win168"}
+      </p>
     </form>
   );
 }
@@ -446,26 +467,208 @@ function StatusPill({ status }: { status: TradeRow["status"] }) {
   );
 }
 
+// ── Asset history chart ───────────────────────────────────────────────────────
+
+function AssetHistoryChart({ history, market }: { history: AccountSnapshot[]; market: string }) {
+  const ccy = market === "US" ? "US$" : "NT$";
+  if (!history.length) {
+    return (
+      <div className="flex items-center justify-center h-24 text-[#555570] text-xs">
+        No history yet — opens automatically as you use the platform
+      </div>
+    );
+  }
+  const data = history.map(h => ({
+    date:  h.date?.slice(5) ?? "",   // MM-DD
+    value: h.total_value ?? 0,
+  }));
+  const min = Math.min(...data.map(d => d.value));
+  const max = Math.max(...data.map(d => d.value));
+  const domain: [number, number] = [Math.floor(min * 0.995), Math.ceil(max * 1.005)];
+  const latest = data[data.length - 1]?.value ?? 0;
+  const first  = data[0]?.value ?? 0;
+  const delta  = latest - first;
+  const deltaPct = first > 0 ? (delta / first) * 100 : 0;
+  const color = delta >= 0 ? "#00e676" : "#ff5252";
+
+  return (
+    <div className="px-4 py-3 border-b border-[#2e2e50]">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-[#8888aa]">Asset History ({history.length}d)</span>
+        <span className={`text-xs font-bold ${delta >= 0 ? "text-[#00e676]" : "text-[#ff5252]"}`}>
+          {delta >= 0 ? "+" : ""}{ccy} {fmt(delta)} ({deltaPct >= 0 ? "+" : ""}{deltaPct.toFixed(2)}%)
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={72}>
+        <AreaChart data={data} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
+          <defs>
+            <linearGradient id="assetGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%"  stopColor={color} stopOpacity={0.3} />
+              <stop offset="95%" stopColor={color} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#555570" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+          <YAxis domain={domain} hide />
+          <Tooltip
+            contentStyle={{ background: "#111128", border: "1px solid #2e2e50", borderRadius: 6, fontSize: 11 }}
+            formatter={(v: number) => [`${ccy} ${v.toLocaleString()}`, "Total Value"]}
+            labelStyle={{ color: "#8888aa" }}
+          />
+          <Area type="monotone" dataKey="value" stroke={color} strokeWidth={1.5} fill="url(#assetGrad)" dot={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ── Options chain panel ───────────────────────────────────────────────────────
+
+function OptionsChainPanel({ onSelectContract }: {
+  onSelectContract: (code: string, price: number) => void;
+}) {
+  const [ticker,    setTicker]    = useState("AAPL");
+  const [chain,     setChain]     = useState<OptionsChainResponse | null>(null);
+  const [loading,   setLoading]   = useState(false);
+  const [error,     setError]     = useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = useState<"ALL" | "CALL" | "PUT">("ALL");
+
+  const fetchChain = async () => {
+    if (!ticker) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await brokerOptionsChain(ticker);
+      setChain(res);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to fetch options chain");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const contracts = (chain?.contracts ?? []).filter(
+    c => typeFilter === "ALL" || c.type === typeFilter
+  );
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Search bar */}
+      <div className="flex gap-2 p-3 border-b border-[#2e2e50]">
+        <input
+          value={ticker}
+          onChange={e => setTicker(e.target.value.toUpperCase())}
+          onKeyDown={e => e.key === "Enter" && fetchChain()}
+          placeholder="AAPL"
+          className="flex-1 bg-[#0d0d14] border border-[#2e2e50] rounded-lg px-3 py-1.5 text-white text-sm placeholder-[#555570] focus:outline-none focus:border-[#4e4e90]"
+        />
+        <button
+          onClick={fetchChain}
+          disabled={loading}
+          className="px-3 py-1.5 rounded-lg bg-[#1a2744] text-[#448aff] border border-[#448aff]/40 text-sm font-bold hover:bg-[#243380] transition-colors disabled:opacity-40"
+        >
+          {loading ? "…" : "Fetch"}
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-[#ff5252] px-3 py-2">{error}</p>}
+
+      {chain && (
+        <div className="px-3 py-1.5 border-b border-[#2e2e50] flex items-center gap-2">
+          <span className="text-xs text-[#8888aa]">Expiry: {chain.expiry ?? "—"}</span>
+          <span className="text-xs text-[#555570]">|</span>
+          {(["ALL", "CALL", "PUT"] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTypeFilter(t)}
+              className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                typeFilter === t
+                  ? t === "CALL" ? "border-[#00e676] text-[#00e676] bg-[#00e676]/10"
+                  : t === "PUT"  ? "border-[#ff5252] text-[#ff5252] bg-[#ff5252]/10"
+                  : "border-[#4e4e90] text-white bg-[#1a1a2e]"
+                  : "border-[#2e2e50] text-[#555570]"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+          <span className="ml-auto text-xs text-[#555570]">{contracts.length} contracts</span>
+        </div>
+      )}
+
+      {!chain && !loading && (
+        <div className="flex flex-col items-center justify-center flex-1 text-[#555570] text-xs gap-1">
+          <span className="text-2xl">⛓</span>
+          <span>Enter a US ticker and click Fetch</span>
+          <span className="text-[#2e2e50]">Requires Moomoo OpenD running</span>
+        </div>
+      )}
+
+      {chain && (
+        <div className="flex-1 overflow-y-auto text-xs">
+          <table className="w-full">
+            <thead className="sticky top-0 bg-[#0d0d14]">
+              <tr className="border-b border-[#2e2e50] text-[#555570]">
+                <th className="text-left px-2 py-1.5">Type</th>
+                <th className="text-right px-2 py-1.5">Strike</th>
+                <th className="text-right px-2 py-1.5">Bid</th>
+                <th className="text-right px-2 py-1.5">Ask</th>
+                <th className="text-right px-2 py-1.5">IV%</th>
+                <th className="text-right px-2 py-1.5">Δ</th>
+                <th className="text-right px-2 py-1.5">OI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {contracts.map((c, i) => (
+                <tr
+                  key={i}
+                  onClick={() => onSelectContract(c.code, c.ask || c.last)}
+                  className="border-b border-[#1e1e38] hover:bg-[#13132a] cursor-pointer transition-colors"
+                >
+                  <td className={`px-2 py-1.5 font-bold ${c.type === "CALL" ? "text-[#00e676]" : "text-[#ff5252]"}`}>
+                    {c.type}
+                  </td>
+                  <td className="px-2 py-1.5 text-right text-white">{c.strike.toFixed(0)}</td>
+                  <td className="px-2 py-1.5 text-right text-[#ccc]">{c.bid.toFixed(2)}</td>
+                  <td className="px-2 py-1.5 text-right text-[#ccc]">{c.ask.toFixed(2)}</td>
+                  <td className="px-2 py-1.5 text-right text-[#8888aa]">{(c.iv * 100).toFixed(0)}%</td>
+                  <td className="px-2 py-1.5 text-right text-[#8888aa]">{c.delta.toFixed(2)}</td>
+                  <td className="px-2 py-1.5 text-right text-[#555570]">{c.open_int.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function TradingPage() {
+  const [market,    setMarket]    = useState<"TW" | "US">("TW");
   const [status,    setStatus]    = useState<BrokerStatus  | null>(null);
   const [balance,   setBalance]   = useState<BrokerBalance | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [orders,    setOrders]    = useState<BrokerOrder[]>([]);
   const [trades,    setTrades]    = useState<TradeRow[]>([]);
+  const [history,   setHistory]   = useState<AccountSnapshot[]>([]);
 
   const [loadingAccount,   setLoadingAccount]   = useState(true);
   const [loadingPositions, setLoadingPositions] = useState(true);
   const [loadingOrders,    setLoadingOrders]    = useState(true);
   const [loadingTrades,    setLoadingTrades]    = useState(true);
 
+  const [rightTab, setRightTab] = useState<"order" | "options">("order");
+  const [orderTicker, setOrderTicker] = useState("");
+  const [orderPrice,  setOrderPrice]  = useState("");
+
   const [toast, setToast] = useState<{ msg: string; dry: boolean } | null>(null);
 
-  const loadAccount = useCallback(async () => {
+  const loadAccount = useCallback(async (mkt: string) => {
     setLoadingAccount(true);
     try {
-      const [st, bal] = await Promise.allSettled([brokerStatus(), brokerBalance()]);
+      const [st, bal] = await Promise.allSettled([brokerStatus(), brokerBalance(mkt)]);
       if (st.status  === "fulfilled") setStatus(st.value);
       if (bal.status === "fulfilled") setBalance(bal.value);
     } finally {
@@ -473,10 +676,10 @@ export default function TradingPage() {
     }
   }, []);
 
-  const loadPositions = useCallback(async () => {
+  const loadPositions = useCallback(async (mkt: string) => {
     setLoadingPositions(true);
     try {
-      setPositions(await brokerPositions());
+      setPositions(await brokerPositions(mkt));
     } catch {
       setPositions([]);
     } finally {
@@ -484,10 +687,10 @@ export default function TradingPage() {
     }
   }, []);
 
-  const loadOrders = useCallback(async () => {
+  const loadOrders = useCallback(async (mkt: string) => {
     setLoadingOrders(true);
     try {
-      setOrders(await brokerOrders(1));
+      setOrders(await brokerOrders(1, mkt));
     } catch {
       setOrders([]);
     } finally {
@@ -495,10 +698,10 @@ export default function TradingPage() {
     }
   }, []);
 
-  const loadTrades = useCallback(async () => {
+  const loadTrades = useCallback(async (mkt: string) => {
     setLoadingTrades(true);
     try {
-      setTrades(await brokerTrades({ limit: 200, days: 90 }));
+      setTrades(await brokerTrades({ limit: 200, days: 90, market: mkt }));
     } catch {
       setTrades([]);
     } finally {
@@ -506,21 +709,26 @@ export default function TradingPage() {
     }
   }, []);
 
-  const refresh = useCallback(() => {
-    loadAccount();
-    loadPositions();
-    loadOrders();
-    loadTrades();
-  }, [loadAccount, loadPositions, loadOrders, loadTrades]);
+  const loadHistory = useCallback(async (mkt: string) => {
+    brokerAssetHistory(mkt, 90).then(setHistory).catch(() => {});
+  }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  const refresh = useCallback((mkt: string) => {
+    loadAccount(mkt);
+    loadPositions(mkt);
+    loadOrders(mkt);
+    loadTrades(mkt);
+    loadHistory(mkt);
+  }, [loadAccount, loadPositions, loadOrders, loadTrades, loadHistory]);
+
+  useEffect(() => { refresh(market); }, [market]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleOrderPlaced = (msg: string, isDry: boolean) => {
     setToast({ msg, dry: isDry });
     setTimeout(() => setToast(null), 6000);
-    loadPositions();
-    loadTrades();
-    loadOrders();
+    loadPositions(market);
+    loadTrades(market);
+    loadOrders(market);
   };
 
   return (
@@ -537,13 +745,41 @@ export default function TradingPage() {
         </div>
       )}
 
-      {/* Account bar */}
-      <AccountBar
-        balance={balance}
-        status={status}
-        loading={loadingAccount}
-        onRefresh={refresh}
-      />
+      {/* Market toggle + Account bar */}
+      <div className="shrink-0">
+        <div className="flex items-center gap-2 px-4 py-2 bg-[#0d0d14] border-b border-[#2e2e50]">
+          <span className="text-xs text-[#555570]">市場</span>
+          {(["TW", "US"] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => setMarket(m)}
+              className={[
+                "text-xs font-bold px-3 py-1 rounded-lg border transition-colors",
+                market === m
+                  ? "border-[#448aff] text-[#448aff] bg-[#1a2744]"
+                  : "border-[#2e2e50] text-[#555570] hover:border-[#448aff] hover:text-[#448aff]",
+              ].join(" ")}
+            >
+              {m === "TW" ? "🇹🇼 CTBC" : "🇺🇸 Moomoo"}
+            </button>
+          ))}
+          {market === "US" && (
+            <span className="text-[10px] text-[#555570] ml-1">需要 Moomoo OpenD 執行中</span>
+          )}
+        </div>
+        <AccountBar
+          balance={balance}
+          status={status}
+          loading={loadingAccount}
+          onRefresh={() => refresh(market)}
+          market={market}
+        />
+      </div>
+
+      {/* Asset history chart */}
+      <div className="shrink-0 bg-[#111128]">
+        <AssetHistoryChart history={history} market={market} />
+      </div>
 
       {/* Main layout */}
       <div className="flex-1 flex overflow-hidden">
@@ -569,20 +805,58 @@ export default function TradingPage() {
           </div>
         </div>
 
-        {/* Right: order form + today's orders */}
+        {/* Right: order form / options chain + today's orders */}
         <div className="w-80 shrink-0 flex flex-col overflow-hidden">
-          <div className="shrink-0 border-b border-[#2e2e50] px-4 py-2">
-            <h2 className="text-sm font-bold text-white">Place Order</h2>
+          {/* Tab switcher */}
+          <div className="shrink-0 border-b border-[#2e2e50] flex">
+            {([
+              ["order",   "Place Order"],
+              ["options", "Options Chain"],
+            ] as const).map(([tab, label]) => (
+              <button
+                key={tab}
+                onClick={() => setRightTab(tab)}
+                className={[
+                  "flex-1 py-2 text-xs font-bold border-b-2 transition-colors",
+                  rightTab === tab
+                    ? "border-[#448aff] text-white"
+                    : "border-transparent text-[#555570] hover:text-white",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <div className="shrink-0 border-b border-[#2e2e50]">
-            <OrderForm onOrderPlaced={handleOrderPlaced} />
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            <div className="px-4 py-2 border-b border-[#2e2e50]">
-              <h2 className="text-xs font-bold text-[#8888aa] uppercase tracking-wide">Today&apos;s Orders</h2>
+
+          {rightTab === "order" ? (
+            <>
+              <div className="shrink-0 border-b border-[#2e2e50]">
+                <OrderForm
+                  onOrderPlaced={handleOrderPlaced}
+                  market={market}
+                  prefillTicker={orderTicker}
+                  prefillPrice={orderPrice}
+                  onClearPrefill={() => { setOrderTicker(""); setOrderPrice(""); }}
+                />
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <div className="px-4 py-2 border-b border-[#2e2e50]">
+                  <h2 className="text-xs font-bold text-[#8888aa] uppercase tracking-wide">Today&apos;s Orders</h2>
+                </div>
+                <TodayOrders orders={orders} loading={loadingOrders} />
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <OptionsChainPanel
+                onSelectContract={(code, price) => {
+                  setOrderTicker(code);
+                  setOrderPrice(String(price));
+                  setRightTab("order");
+                }}
+              />
             </div>
-            <TodayOrders orders={orders} loading={loadingOrders} />
-          </div>
+          )}
         </div>
       </div>
     </div>

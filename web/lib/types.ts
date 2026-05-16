@@ -266,6 +266,34 @@ export interface BrokerOrder {
   status: string;
 }
 
+export interface AccountSnapshot {
+  date:           string;
+  total_value:    number | null;
+  cash:           number | null;
+  unrealized_pnl: number | null;
+  currency:       string | null;
+}
+
+export interface OptionsContract {
+  code:     string;
+  expiry:   string;
+  strike:   number;
+  type:     string;   // "CALL" | "PUT"
+  bid:      number;
+  ask:      number;
+  last:     number;
+  volume:   number;
+  open_int: number;
+  iv:       number;
+  delta:    number;
+}
+
+export interface OptionsChainResponse {
+  ticker:    string;
+  expiry:    string | null;
+  contracts: OptionsContract[];
+}
+
 export interface TradeRow {
   id:              number;
   broker:          string;
