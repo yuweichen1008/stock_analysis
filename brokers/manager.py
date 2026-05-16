@@ -37,28 +37,12 @@ class BrokerManager:
         """Instantiate client objects for every broker that has credentials."""
         clients = []
         try:
-            from brokers.ibkr import IBKRClient
-            if IBKRClient.is_configured():
-                clients.append(IBKRClient())
-                logger.info("BrokerManager: IBKR enabled")
-        except ImportError:
-            logger.debug("ib_insync not installed — IBKR skipped")
-
-        try:
             from brokers.moomoo import MoomooClient
             if MoomooClient.is_configured():
                 clients.append(MoomooClient())
                 logger.info("BrokerManager: Moomoo enabled")
         except ImportError:
             logger.debug("moomoo-api not installed — Moomoo skipped")
-
-        try:
-            from brokers.robinhood import RobinhoodClient
-            if RobinhoodClient.is_configured():
-                clients.append(RobinhoodClient())
-                logger.info("BrokerManager: Robinhood enabled")
-        except ImportError:
-            logger.debug("robin_stocks not installed — Robinhood skipped")
 
         try:
             from brokers.ctbc import CTBCClient
@@ -110,9 +94,8 @@ class BrokerManager:
         return (
             "⚠️ *No brokers connected*\n\n"
             "Configure at least one broker in `.env`:\n"
-            "• IBKR: set `IBKR_PORT`\n"
-            "• Moomoo: set `MOOMOO_PORT`\n"
-            "• Robinhood: set `ROBINHOOD_USERNAME` + `ROBINHOOD_PASSWORD`"
+            "• Moomoo (US): set `MOOMOO_PORT=11111` and start Moomoo OpenD\n"
+            "• CTBC (TW): set `CTBC_ID` + `CTBC_PASSWORD`"
         )
 
     # ------------------------------------------------------------------

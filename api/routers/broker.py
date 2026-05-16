@@ -1,16 +1,16 @@
 """
-Broker API — CTBC TWS trading endpoints.
+Broker API — CTBC (TW) and Moomoo (US) trading endpoints.
 
 All routes require X-Internal-Secret header matching INTERNAL_API_SECRET.
-The CTBC Playwright client runs in a thread pool (never blocks the event loop).
+Live-data routes accept ?market=TW (CTBC) or ?market=US (Moomoo).
 
 Routes:
-  GET  /api/broker/status          — connection status + dry-run flag
-  GET  /api/broker/balance         — live account balance from CTBC
-  GET  /api/broker/positions       — live open positions from CTBC
-  GET  /api/broker/orders          — recent orders from CTBC (?days=7)
+  GET  /api/broker/status          — status for both brokers
+  GET  /api/broker/balance         — live account balance (?market=TW|US)
+  GET  /api/broker/positions       — live open positions (?market=TW|US)
+  GET  /api/broker/orders          — recent broker orders (?market=TW|US, ?days=7)
   POST /api/broker/order           — place order → record in trades table
-  GET  /api/broker/trades          — trade history from DB (?limit&ticker&status&days)
+  GET  /api/broker/trades          — trade history from DB (?limit&ticker&status&days&market)
   GET  /api/broker/trades/{ticker} — trade history for one ticker
 """
 from __future__ import annotations
@@ -27,6 +27,9 @@ from api.config import settings
 from api.db import Trade, get_db
 from api.services.broker_service import (
     ctbc_call, ctbc_is_configured, ctbc_is_dry_run, get_ctbc,
+)
+from api.services.moomoo_service import (
+    moomoo_call, moomoo_is_configured, moomoo_is_simulate, get_moomoo,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,9 +48,10 @@ def _require_internal(request: Request) -> None:
 
 class PlaceOrderRequest(BaseModel):
     ticker:        str
-    side:          str          # "buy" | "sell"
+    side:          str           # "buy" | "sell"
     qty:           float
     limit_price:   float
+    market:        str = "TW"   # "TW" → CTBC, "US" → Moomoo
     signal_source: Optional[str] = "manual"
 
 
@@ -97,65 +101,124 @@ class TradeOut(BaseModel):
 
 @router.get("/status")
 def broker_status(_: None = Depends(_require_internal)):
-    """Returns connection configuration — does NOT open a browser session."""
+    """Returns configuration status for both brokers — no browser/socket opened."""
     return {
-        "broker":      "CTBC",
-        "configured":  ctbc_is_configured(),
-        "dry_run":     ctbc_is_dry_run(),
-        "connected":   False,   # lightweight — actual connect is lazy on first data call
+        "brokers": [
+            {
+                "broker":     "CTBC",
+                "market":     "TW",
+                "configured": ctbc_is_configured(),
+                "dry_run":    ctbc_is_dry_run(),
+                "connected":  False,  # lazy connect — actual check on first data call
+                "note":       "Taiwan stocks — Playwright browser automation",
+            },
+            {
+                "broker":     "Moomoo",
+                "market":     "US",
+                "configured": moomoo_is_configured(),
+                "simulate":   moomoo_is_simulate(),
+                "connected":  False,
+                "note":       "US stocks — requires Moomoo OpenD running locally",
+            },
+        ]
     }
+
+
+# ── Helpers: route market to broker ──────────────────────────────────────────
+
+def _assert_tw():
+    if not ctbc_is_configured():
+        raise HTTPException(503, "CTBC credentials not configured — set CTBC_ID + CTBC_PASSWORD in .env")
+
+def _assert_us():
+    if not moomoo_is_configured():
+        raise HTTPException(
+            503,
+            "Moomoo not configured — set MOOMOO_PORT=11111 in .env and start Moomoo OpenD. "
+            "Download from https://www.moomoo.com/openapi/"
+        )
 
 
 # ── GET /balance ──────────────────────────────────────────────────────────────
 
 @router.get("/balance")
-async def broker_balance(_: None = Depends(_require_internal)):
-    if not ctbc_is_configured():
-        raise HTTPException(503, "CTBC credentials not configured")
-    try:
-        client = get_ctbc()
-        balance = await ctbc_call(client.get_balance)
-        return balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "TWD"}
-    except Exception as exc:
-        logger.warning("broker_balance error: %s", exc)
-        raise HTTPException(503, f"CTBC unavailable: {exc}")
+async def broker_balance(
+    market: str = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    _: None = Depends(_require_internal),
+):
+    if market.upper() == "US":
+        _assert_us()
+        try:
+            client = get_moomoo()
+            balance = await moomoo_call(client.get_balance)
+            return balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "USD"}
+        except Exception as exc:
+            logger.warning("moomoo balance error: %s", exc)
+            raise HTTPException(503, f"Moomoo unavailable: {exc}")
+    else:
+        _assert_tw()
+        try:
+            client = get_ctbc()
+            balance = await ctbc_call(client.get_balance)
+            return balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "TWD"}
+        except Exception as exc:
+            logger.warning("ctbc balance error: %s", exc)
+            raise HTTPException(503, f"CTBC unavailable: {exc}")
 
 
 # ── GET /positions ────────────────────────────────────────────────────────────
 
 @router.get("/positions")
-async def broker_positions(_: None = Depends(_require_internal)):
-    if not ctbc_is_configured():
-        raise HTTPException(503, "CTBC credentials not configured")
-    try:
-        client = get_ctbc()
-        df = await ctbc_call(client.get_positions)
-        if df is None or df.empty:
-            return []
-        return df.to_dict(orient="records")
-    except Exception as exc:
-        logger.warning("broker_positions error: %s", exc)
-        raise HTTPException(503, f"CTBC unavailable: {exc}")
+async def broker_positions(
+    market: str = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    _: None = Depends(_require_internal),
+):
+    if market.upper() == "US":
+        _assert_us()
+        try:
+            client = get_moomoo()
+            df = await moomoo_call(client.get_positions)
+            return [] if df is None or df.empty else df.to_dict(orient="records")
+        except Exception as exc:
+            logger.warning("moomoo positions error: %s", exc)
+            raise HTTPException(503, f"Moomoo unavailable: {exc}")
+    else:
+        _assert_tw()
+        try:
+            client = get_ctbc()
+            df = await ctbc_call(client.get_positions)
+            return [] if df is None or df.empty else df.to_dict(orient="records")
+        except Exception as exc:
+            logger.warning("ctbc positions error: %s", exc)
+            raise HTTPException(503, f"CTBC unavailable: {exc}")
 
 
 # ── GET /orders ───────────────────────────────────────────────────────────────
 
 @router.get("/orders")
 async def broker_orders(
-    days: int = Query(default=7, ge=1, le=90),
+    market: str = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    days:   int = Query(default=7, ge=1, le=90),
     _: None = Depends(_require_internal),
 ):
-    if not ctbc_is_configured():
-        raise HTTPException(503, "CTBC credentials not configured")
-    try:
-        client = get_ctbc()
-        df = await ctbc_call(client.get_orders, days)
-        if df is None or df.empty:
-            return []
-        return df.to_dict(orient="records")
-    except Exception as exc:
-        logger.warning("broker_orders error: %s", exc)
-        raise HTTPException(503, f"CTBC unavailable: {exc}")
+    if market.upper() == "US":
+        _assert_us()
+        try:
+            client = get_moomoo()
+            df = await moomoo_call(client.get_orders, days)
+            return [] if df is None or df.empty else df.to_dict(orient="records")
+        except Exception as exc:
+            logger.warning("moomoo orders error: %s", exc)
+            raise HTTPException(503, f"Moomoo unavailable: {exc}")
+    else:
+        _assert_tw()
+        try:
+            client = get_ctbc()
+            df = await ctbc_call(client.get_orders, days)
+            return [] if df is None or df.empty else df.to_dict(orient="records")
+        except Exception as exc:
+            logger.warning("ctbc orders error: %s", exc)
+            raise HTTPException(503, f"CTBC unavailable: {exc}")
 
 
 # ── POST /order ───────────────────────────────────────────────────────────────
@@ -166,9 +229,6 @@ async def broker_place_order(
     db: Session = Depends(get_db),
     _: None = Depends(_require_internal),
 ):
-    if not ctbc_is_configured():
-        raise HTTPException(503, "CTBC credentials not configured")
-
     side = body.side.lower()
     if side not in ("buy", "sell"):
         raise HTTPException(400, "side must be 'buy' or 'sell'")
@@ -178,30 +238,41 @@ async def broker_place_order(
         raise HTTPException(400, "limit_price must be positive")
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    market = body.market.upper()
 
-    try:
-        client = get_ctbc()
-        result = await ctbc_call(
-            client.place_order,
-            body.ticker,
-            side.upper(),
-            body.qty,
-            "LIMIT",
-            body.limit_price,
-        )
-    except Exception as exc:
-        logger.warning("broker_place_order CTBC call failed: %s", exc)
-        raise HTTPException(503, f"CTBC unavailable: {exc}")
+    if market == "US":
+        _assert_us()
+        broker_name = "Moomoo"
+        try:
+            client = get_moomoo()
+            result = await moomoo_call(
+                client.place_order, body.ticker, side.upper(),
+                body.qty, "LIMIT", body.limit_price,
+            )
+        except Exception as exc:
+            logger.warning("moomoo place_order failed: %s", exc)
+            raise HTTPException(503, f"Moomoo unavailable: {exc}")
+    else:
+        _assert_tw()
+        broker_name = "CTBC"
+        try:
+            client = get_ctbc()
+            result = await ctbc_call(
+                client.place_order, body.ticker, side.upper(),
+                body.qty, "LIMIT", body.limit_price,
+            )
+        except Exception as exc:
+            logger.warning("ctbc place_order failed: %s", exc)
+            raise HTTPException(503, f"CTBC unavailable: {exc}")
 
-    # Determine status from CTBC result
-    success = result.get("success", False)
+    success  = result.get("success", False)
     order_id = result.get("order_id", "") or None
-    is_dry = "DRY" in (order_id or "")
+    is_dry   = not success or (order_id and "DRY" in str(order_id))
 
     trade = Trade(
-        broker          = "CTBC",
+        broker          = broker_name,
         ticker          = body.ticker.upper(),
-        market          = "TW",
+        market          = market,
         side            = side,
         qty             = body.qty,
         order_type      = "LIMIT",
@@ -230,6 +301,7 @@ def broker_trades(
     limit:  int            = Query(default=50, ge=1, le=500),
     ticker: Optional[str]  = Query(default=None),
     status: Optional[str]  = Query(default=None),
+    market: Optional[str]  = Query(default=None, description="TW or US"),
     days:   int            = Query(default=90, ge=1, le=730),
     db:     Session        = Depends(get_db),
     _:      None           = Depends(_require_internal),
@@ -240,6 +312,8 @@ def broker_trades(
         q = q.filter(Trade.ticker == ticker.upper())
     if status:
         q = q.filter(Trade.status == status)
+    if market:
+        q = q.filter(Trade.market == market.upper())
     rows = q.order_by(Trade.created_at.desc()).limit(limit).all()
     return [TradeOut.from_orm(r) for r in rows]
 
@@ -261,7 +335,7 @@ def broker_ticker_trades(
         .all()
     )
     return {
-        "ticker":  ticker.upper(),
-        "count":   len(rows),
-        "trades":  [TradeOut.from_orm(r) for r in rows],
+        "ticker": ticker.upper(),
+        "count":  len(rows),
+        "trades": [TradeOut.from_orm(r) for r in rows],
     }

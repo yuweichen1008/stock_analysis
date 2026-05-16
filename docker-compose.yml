@@ -70,5 +70,16 @@ services:
     profiles:
       - pipeline   # docker compose --profile pipeline up pipeline
 
+  # ── Adminer — web UI to browse PostgreSQL ────────────────────────────────────
+  # Visit http://localhost:8081
+  # System: PostgreSQL | Server: postgres | User: oracle | Password: oracle_dev_password | DB: oracle
+  adminer:
+    image: adminer:4
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+
 volumes:
   postgres_data:

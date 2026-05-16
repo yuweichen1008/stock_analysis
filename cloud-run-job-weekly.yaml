@@ -27,8 +27,7 @@ spec:
                   value: America/New_York
                 - name: WEEKLY_DRY_RUN
                   value: "true"
-                - name: WEEKLY_BROKER
-                  value: "Robinhood"
+                # WEEKLY_BROKER=Moomoo requires OpenD running locally — keep dry_run=true in Cloud Run
                 - name: GCS_BUCKET
                   valueFrom:
                     secretKeyRef:
