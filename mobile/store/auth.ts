@@ -23,12 +23,14 @@ interface AuthState {
   token:  string | null;
   user:   AuthUser | null;
 
-  hydrateFromStorage: () => Promise<void>;
-  loginWithApple:     (identityToken: string, fullName?: string) => Promise<void>;
-  loginWithGoogle:    (idToken: string) => Promise<void>;
-  loginWithDevice:    () => Promise<void>;
-  updateUser:         (patch: Partial<AuthUser>) => void;
-  logout:             () => Promise<void>;
+  hydrateFromStorage:  () => Promise<void>;
+  loginWithApple:      (identityToken: string, fullName?: string) => Promise<void>;
+  loginWithGoogle:     (idToken: string) => Promise<void>;
+  loginWithDevice:     () => Promise<void>;
+  loginWithEmail:      (email: string, password: string) => Promise<void>;
+  registerWithEmail:   (email: string, password: string, displayName?: string) => Promise<void>;
+  updateUser:          (patch: Partial<AuthUser>) => void;
+  logout:              () => Promise<void>;
 }
 
 const TOKEN_KEY = 'oracle_auth_token';
@@ -75,6 +77,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   loginWithDevice: async () => {
     const deviceId = await getOrCreateDeviceId();
     const res = await Auth.device(deviceId);
+    await _persist(res.access_token, res.user);
+    set({ token: res.access_token, user: res.user });
+  },
+
+  loginWithEmail: async (email, password) => {
+    const res = await Auth.login(email, password);
+    await _persist(res.access_token, res.user);
+    set({ token: res.access_token, user: res.user });
+  },
+
+  registerWithEmail: async (email, password, displayName) => {
+    const res = await Auth.register(email, password, displayName);
     await _persist(res.access_token, res.user);
     set({ token: res.access_token, user: res.user });
   },

@@ -198,6 +198,10 @@ export const Auth = {
     api.post<AuthResponse>('/api/auth/google', { id_token }).then(r => r.data),
   device: (device_id: string, nickname?: string) =>
     api.post<AuthResponse>('/api/auth/device', { device_id, nickname }).then(r => r.data),
+  login: (email: string, password: string) =>
+    api.post<AuthResponse>('/api/auth/login', { email, password }).then(r => r.data),
+  register: (email: string, password: string, display_name?: string) =>
+    api.post<AuthResponse>('/api/auth/register', { email, password, display_name }).then(r => r.data),
 };
 
 export const Watchlist = {
