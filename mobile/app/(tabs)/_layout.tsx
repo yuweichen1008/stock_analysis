@@ -41,6 +41,10 @@ export default function TabLayout() {
         options={{ title: '自選股', tabBarIcon: ({ color }) => <TabIcon label="⭐" color={color} /> }}
       />
       <Tabs.Screen
+        name="portfolio"
+        options={{ title: '持倉', tabBarIcon: ({ color }) => <TabIcon label="💼" color={color} /> }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{ title: '我的', tabBarIcon: ({ color }) => <TabIcon label="👤" color={color} /> }}
       />

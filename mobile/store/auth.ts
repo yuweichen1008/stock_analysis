@@ -17,6 +17,7 @@ export interface AuthUser {
   coins:         number;
   avatar_url:    string | null;
   auth_provider: string | null;
+  has_ctbc?:     boolean | null;
 }
 
 interface AuthState {

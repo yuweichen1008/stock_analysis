@@ -478,23 +478,38 @@ export interface TradeRow {
   created_at:      string;
 }
 
+export interface AccountSnapshot {
+  date:           string;
+  total_value:    number | null;
+  cash:           number | null;
+  unrealized_pnl: number | null;
+  currency:       string | null;
+}
+
 const INTERNAL_SECRET = process.env.EXPO_PUBLIC_INTERNAL_SECRET ?? '';
-const brokerHeaders = { 'X-Internal-Secret': INTERNAL_SECRET };
+const getBrokerHeaders = (): Record<string, string> => {
+  const h: Record<string, string> = {};
+  if (INTERNAL_SECRET) h['X-Internal-Secret'] = INTERNAL_SECRET;
+  // JWT is attached automatically by the axios interceptor from oracle_auth_token
+  return h;
+};
 
 export const Broker = {
   status:    () =>
-    api.get<BrokerStatus>('/api/broker/status', { headers: brokerHeaders }).then(r => r.data),
-  balance:   () =>
-    api.get<BrokerBalance>('/api/broker/balance', { headers: brokerHeaders }).then(r => r.data),
-  positions: () =>
-    api.get<BrokerPosition[]>('/api/broker/positions', { headers: brokerHeaders }).then(r => r.data),
+    api.get<BrokerStatus>('/api/broker/status', { headers: getBrokerHeaders() }).then(r => r.data),
+  balance:   (market = 'TW') =>
+    api.get<BrokerBalance>(`/api/broker/balance?market=${market}`, { headers: getBrokerHeaders() }).then(r => r.data),
+  positions: (market = 'TW') =>
+    api.get<BrokerPosition[]>(`/api/broker/positions?market=${market}`, { headers: getBrokerHeaders() }).then(r => r.data),
   trades:    (limit = 50, days = 90) =>
-    api.get<TradeRow[]>(`/api/broker/trades?limit=${limit}&days=${days}`, { headers: brokerHeaders }).then(r => r.data),
+    api.get<TradeRow[]>(`/api/broker/trades?limit=${limit}&days=${days}`, { headers: getBrokerHeaders() }).then(r => r.data),
+  assetHistory: (market = 'TW', days = 90) =>
+    api.get<AccountSnapshot[]>(`/api/broker/asset-history?market=${market}&days=${days}`, { headers: getBrokerHeaders() }).then(r => r.data),
   placeOrder: (ticker: string, side: 'buy' | 'sell', qty: number, limit_price: number) =>
     api.post<{ trade: TradeRow; message: string; dry_run: boolean }>(
       '/api/broker/order',
       { ticker, side, qty, limit_price, signal_source: 'manual' },
-      { headers: brokerHeaders },
+      { headers: getBrokerHeaders() },
     ).then(r => r.data),
 };
 
