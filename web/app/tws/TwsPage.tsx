@@ -9,6 +9,7 @@ import {
 import type { TwsStock, TwsUniverse, OhlcvResponse, BrokerBalance, Position } from "@/lib/types";
 import { twsUniverse, twsStock, twsLookup, chartOhlcv, brokerBalance, brokerPositions } from "@/lib/api";
 import TerminalLog, { type LogEntry, type LogType } from "@/components/TerminalLog";
+import OptionsInsightWidget from "@/components/OptionsInsightWidget";
 import { useAuth } from "@/lib/auth";
 import Link from "next/link";
 
@@ -717,6 +718,7 @@ export default function TwsPage() {
 
       {broker === "CTBC" && (
       <>
+      <OptionsInsightWidget />
       {/* ── Top toolbar ───────────────────────────────────────────────── */}
       <div className="shrink-0 px-4 py-2.5 border-b border-[#2e2e50] bg-[#111128] flex flex-wrap items-center gap-3">
         {/* Stats */}
