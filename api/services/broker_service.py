@@ -66,3 +66,30 @@ def ctbc_is_configured() -> bool:
 
 def ctbc_is_dry_run() -> bool:
     return os.getenv("CTBC_DRY_RUN", "true").lower() != "false"
+
+
+def make_ctbc_for_user(user) -> "CTBCClient":
+    """Return a CTBCClient using the user's encrypted credentials (or env fallback)."""
+    from brokers.ctbc import CTBCClient
+    from api.auth import decrypt_cred
+    if user and user.ctbc_id_enc and user.ctbc_pass_enc:
+        return CTBCClient(
+            id=decrypt_cred(user.ctbc_id_enc),
+            password=decrypt_cred(user.ctbc_pass_enc),
+            profile_suffix=str(user.id),
+        )
+    return CTBCClient()
+
+
+async def ctbc_call_for_user(user, fn: Callable, *args: Any, **kwargs: Any) -> Any:
+    """Like ctbc_call but uses the user's own credentials (no shared singleton)."""
+    client = make_ctbc_for_user(user)
+    if not client.connect():
+        raise RuntimeError("CTBC: login failed — check credentials")
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    finally:
+        try:
+            client.disconnect()
+        except Exception:
+            pass

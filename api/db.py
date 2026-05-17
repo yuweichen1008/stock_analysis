@@ -50,6 +50,13 @@ class User(Base):
     nickname      = Column(String(255), nullable=True)   # legacy alias
     push_token    = Column(String(512), nullable=True)
     created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Email+password auth (auth_provider="email")
+    password_hash   = Column(String(255), nullable=True)
+    # Per-user encrypted broker credentials (Fernet, key in BROKER_ENCRYPTION_KEY)
+    ctbc_id_enc     = Column(Text, nullable=True)
+    ctbc_pass_enc   = Column(Text, nullable=True)
+    moomoo_host_enc = Column(Text, nullable=True)
+    moomoo_port_enc = Column(Text, nullable=True)
 
 
 # ── Telegram subscribers ──────────────────────────────────────────────────────

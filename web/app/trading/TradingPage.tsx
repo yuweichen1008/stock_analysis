@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useAuth } from "@/lib/auth";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import type { BrokerStatus, BrokerBalance, Position, BrokerOrder, TradeRow, AccountSnapshot, OptionsContract, OptionsChainResponse } from "@/lib/types";
 import {
@@ -646,6 +648,7 @@ function OptionsChainPanel({ onSelectContract }: {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function TradingPage() {
+  const { user } = useAuth();
   const [market,    setMarket]    = useState<"TW" | "US">("TW");
   const [status,    setStatus]    = useState<BrokerStatus  | null>(null);
   const [balance,   setBalance]   = useState<BrokerBalance | null>(null);
@@ -742,6 +745,18 @@ export default function TradingPage() {
         }`}>
           {toast.dry && <span className="font-bold">DRY RUN — </span>}
           {toast.msg}
+        </div>
+      )}
+
+      {/* Login banner */}
+      {!user && (
+        <div className="shrink-0 px-4 py-2 bg-[#7c5cfc1a] border-b border-[#7c5cfc40] flex items-center justify-between">
+          <span className="text-xs text-[#a99cff]">
+            Sign in to connect your broker and place live orders
+          </span>
+          <Link href="/login?next=/trading" className="text-xs font-semibold text-[#7c5cfc] hover:text-[#8f72ff] whitespace-nowrap ml-3">
+            Sign In →
+          </Link>
         </div>
       )}
 

@@ -24,6 +24,41 @@ from api.db import User, get_db
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/device", auto_error=False)
 
+
+# ── Broker credential encryption (Fernet) ─────────────────────────────────────
+
+def _get_fernet():
+    """Return a Fernet instance if BROKER_ENCRYPTION_KEY is configured, else None."""
+    key = settings.BROKER_ENCRYPTION_KEY.strip()
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode())
+    except Exception:
+        return None
+
+
+def encrypt_cred(plaintext: str) -> str | None:
+    """Encrypt a credential string. Returns None if encryption key is not set."""
+    f = _get_fernet()
+    if f is None or not plaintext:
+        return None
+    return f.encrypt(plaintext.encode()).decode()
+
+
+def decrypt_cred(token: str | None) -> str | None:
+    """Decrypt an encrypted credential. Returns None on any error."""
+    if not token:
+        return None
+    f = _get_fernet()
+    if f is None:
+        return None
+    try:
+        return f.decrypt(token.encode()).decode()
+    except Exception:
+        return None
+
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 
 def create_access_token(user_id: int) -> str:

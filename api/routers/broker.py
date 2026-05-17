@@ -23,10 +23,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.auth import get_optional_user
 from api.config import settings
-from api.db import AccountSnapshot, Trade, get_db
+from api.db import AccountSnapshot, Trade, User, get_db
 from api.services.broker_service import (
-    ctbc_call, ctbc_is_configured, ctbc_is_dry_run, get_ctbc,
+    ctbc_call, ctbc_is_configured, ctbc_is_dry_run, get_ctbc, make_ctbc_for_user,
 )
 from api.services.moomoo_service import (
     moomoo_call, moomoo_is_configured, moomoo_is_simulate, get_moomoo,
@@ -36,12 +37,25 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["broker"])
 
 
-# ── Auth guard ────────────────────────────────────────────────────────────────
+# ── Auth guards ───────────────────────────────────────────────────────────────
 
 def _require_internal(request: Request) -> None:
     key = request.headers.get("X-Internal-Secret", "")
     if key != settings.INTERNAL_API_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _require_user_or_internal(
+    request: Request,
+    user: Optional[User] = Depends(get_optional_user),
+) -> Optional[User]:
+    """Allow either an authenticated user (JWT) or an internal pipeline call (X-Internal-Secret)."""
+    key = request.headers.get("X-Internal-Secret", "")
+    if key == settings.INTERNAL_API_SECRET:
+        return None   # internal caller — no user context
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
 
 
 # ── Request / response models ──────────────────────────────────────────────────
@@ -167,9 +181,9 @@ def _save_snapshot(db: Session, market: str, balance: dict) -> None:
 
 @router.get("/balance")
 async def broker_balance(
-    market: str     = Query(default="TW", description="TW = CTBC, US = Moomoo"),
-    _:      None    = Depends(_require_internal),
-    db:     Session = Depends(get_db),
+    market: str              = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    user:   Optional[User]   = Depends(_require_user_or_internal),
+    db:     Session          = Depends(get_db),
 ):
     if market.upper() == "US":
         _assert_us()
@@ -183,6 +197,17 @@ async def broker_balance(
             logger.warning("moomoo balance error: %s", exc)
             raise HTTPException(503, f"Moomoo unavailable: {exc}")
     else:
+        if user and (user.ctbc_id_enc or user.ctbc_pass_enc):
+            # User has stored credentials — use them
+            try:
+                client = make_ctbc_for_user(user)
+                balance = await ctbc_call(client.get_balance)
+                balance = balance or {"cash": 0, "total_value": 0, "unrealized_pnl": 0, "currency": "TWD"}
+                _save_snapshot(db, "TW", balance)
+                return balance
+            except Exception as exc:
+                logger.warning("ctbc (user %s) balance error: %s", user.id, exc)
+                raise HTTPException(503, f"CTBC unavailable: {exc}")
         _assert_tw()
         try:
             client = get_ctbc()
@@ -199,8 +224,8 @@ async def broker_balance(
 
 @router.get("/positions")
 async def broker_positions(
-    market: str = Query(default="TW", description="TW = CTBC, US = Moomoo"),
-    _: None = Depends(_require_internal),
+    market: str            = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    user:   Optional[User] = Depends(_require_user_or_internal),
 ):
     if market.upper() == "US":
         _assert_us()
@@ -212,6 +237,14 @@ async def broker_positions(
             logger.warning("moomoo positions error: %s", exc)
             raise HTTPException(503, f"Moomoo unavailable: {exc}")
     else:
+        if user and (user.ctbc_id_enc or user.ctbc_pass_enc):
+            try:
+                client = make_ctbc_for_user(user)
+                df = await ctbc_call(client.get_positions)
+                return [] if df is None or df.empty else df.to_dict(orient="records")
+            except Exception as exc:
+                logger.warning("ctbc (user %s) positions error: %s", user.id, exc)
+                raise HTTPException(503, f"CTBC unavailable: {exc}")
         _assert_tw()
         try:
             client = get_ctbc()
@@ -226,9 +259,9 @@ async def broker_positions(
 
 @router.get("/orders")
 async def broker_orders(
-    market: str = Query(default="TW", description="TW = CTBC, US = Moomoo"),
-    days:   int = Query(default=7, ge=1, le=90),
-    _: None = Depends(_require_internal),
+    market: str            = Query(default="TW", description="TW = CTBC, US = Moomoo"),
+    days:   int            = Query(default=7, ge=1, le=90),
+    user:   Optional[User] = Depends(_require_user_or_internal),
 ):
     if market.upper() == "US":
         _assert_us()
@@ -240,6 +273,14 @@ async def broker_orders(
             logger.warning("moomoo orders error: %s", exc)
             raise HTTPException(503, f"Moomoo unavailable: {exc}")
     else:
+        if user and (user.ctbc_id_enc or user.ctbc_pass_enc):
+            try:
+                client = make_ctbc_for_user(user)
+                df = await ctbc_call(client.get_orders, days)
+                return [] if df is None or df.empty else df.to_dict(orient="records")
+            except Exception as exc:
+                logger.warning("ctbc (user %s) orders error: %s", user.id, exc)
+                raise HTTPException(503, f"CTBC unavailable: {exc}")
         _assert_tw()
         try:
             client = get_ctbc()

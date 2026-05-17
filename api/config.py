@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Leave empty to read signal CSVs from local disk (dev mode)
     GCS_BUCKET: str = ""
 
+    # ── Broker credential encryption ─────────────────────────────────────────
+    # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Leave empty to disable credential storage (credentials won't be saveable)
+    BROKER_ENCRYPTION_KEY: str = ""
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated origins, or "*" for open (dev)
     ALLOWED_ORIGINS: str = "*"

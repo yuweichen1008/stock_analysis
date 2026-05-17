@@ -18,8 +18,12 @@ from sqlalchemy.orm import Session
 
 limiter = Limiter(key_func=get_remote_address)
 
-from api.auth import create_access_token, verify_apple_token, verify_google_token
+from passlib.context import CryptContext
+
+from api.auth import create_access_token, get_current_user, verify_apple_token, verify_google_token
 from api.db import User, get_db
+
+_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -31,12 +35,14 @@ def _user_response(user: User, db: Session) -> dict:
         "access_token": create_access_token(user.id),
         "token_type":   "bearer",
         "user": {
-            "id":           user.id,
-            "display_name": user.display_name or user.nickname or f"Player{user.id}",
-            "email":        user.email,
-            "coins":        user.coins,
-            "avatar_url":   user.avatar_url,
+            "id":            user.id,
+            "display_name":  user.display_name or user.nickname or f"Player{user.id}",
+            "email":         user.email,
+            "coins":         user.coins,
+            "avatar_url":    user.avatar_url,
             "auth_provider": user.auth_provider,
+            "has_ctbc":      bool(user.ctbc_id_enc),
+            "has_moomoo":    bool(user.moomoo_host_enc),
         },
     }
 
@@ -129,7 +135,7 @@ def google_auth(request: Request, body: GoogleBody, db: Session = Depends(get_db
     return _user_response(user, db)
 
 
-# ── Device (anonymous / legacy) ───────────────────────────────────────────────
+# ── Device (anonymous / legacy) ──────────────────────────────────────────────
 
 class DeviceBody(BaseModel):
     device_id: str
@@ -159,3 +165,71 @@ def device_auth(request: Request, body: DeviceBody, db: Session = Depends(get_db
         db.refresh(user)
 
     return _user_response(user, db)
+
+
+# ── Email + password ──────────────────────────────────────────────────────────
+
+class RegisterBody(BaseModel):
+    email:        str
+    password:     str
+    display_name: Optional[str] = None
+
+
+class LoginBody(BaseModel):
+    email:    str
+    password: str
+
+
+@router.post("/register")
+@limiter.limit("10/minute")
+def email_register(request: Request, body: RegisterBody, db: Session = Depends(get_db)):
+    """Create a new account with email + password."""
+    email = body.email.strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(400, "Invalid email address")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+
+    existing = db.query(User).filter(User.email == email, User.auth_provider == "email").first()
+    if existing:
+        raise HTTPException(400, "Email already registered")
+
+    user = User(
+        email=email,
+        password_hash=_pwd.hash(body.password),
+        auth_provider="email",
+        auth_id=email,
+        display_name=body.display_name or email.split("@")[0],
+        coins=10_000,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return _user_response(user, db)
+
+
+@router.post("/login")
+@limiter.limit("10/minute")
+def email_login(request: Request, body: LoginBody, db: Session = Depends(get_db)):
+    """Login with email + password; returns JWT."""
+    email = body.email.strip().lower()
+    user = db.query(User).filter(User.email == email, User.auth_provider == "email").first()
+    if not user or not user.password_hash or not _pwd.verify(body.password, user.password_hash):
+        raise HTTPException(401, "Invalid email or password")
+    return _user_response(user, db)
+
+
+@router.get("/me")
+def auth_me(user: User = Depends(get_current_user)):
+    """Return the authenticated user's profile (no new token issued)."""
+    return {
+        "id":            user.id,
+        "display_name":  user.display_name or user.nickname or f"Player{user.id}",
+        "email":         user.email,
+        "coins":         user.coins,
+        "avatar_url":    user.avatar_url,
+        "auth_provider": user.auth_provider,
+        "has_ctbc":      bool(user.ctbc_id_enc),
+        "has_moomoo":    bool(user.moomoo_host_enc),
+    }

@@ -25,7 +25,16 @@ async function post<T>(path: string, body: unknown, headers?: Record<string, str
   return res.json() as Promise<T>;
 }
 
-const brokerHeaders = () => ({ "X-Internal-Secret": INTERNAL_SECRET });
+const brokerHeaders = () => {
+  const h: Record<string, string> = {};
+  if (INTERNAL_SECRET) h["X-Internal-Secret"] = INTERNAL_SECRET;
+  // Include JWT if the user is logged in (for user-credentialed broker calls)
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("loki_token");
+    if (token) h["Authorization"] = `Bearer ${token}`;
+  }
+  return h;
+};
 
 export const newsFeed = (
   market = "all",
@@ -185,3 +194,40 @@ export const brokerPlaceOrder = (body: {
   ticker: string; side: string; qty: number; limit_price: number; market?: string; signal_source?: string;
 }): Promise<{ trade: TradeRow; message: string; dry_run: boolean }> =>
   post("/api/broker/order", body, brokerHeaders());
+
+// ── Auth endpoints ────────────────────────────────────────────────────────────
+
+const jwtHeaders = (): Record<string, string> => {
+  const token = typeof window !== "undefined" ? localStorage.getItem("loki_token") : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+export const authMe = (): Promise<{
+  id: number; email: string | null; display_name: string; coins: number;
+  avatar_url: string | null; auth_provider: string; has_ctbc: boolean; has_moomoo: boolean;
+}> => get("/api/auth/me", jwtHeaders());
+
+// ── Broker credential management ──────────────────────────────────────────────
+
+export const saveBrokerCreds = (
+  broker: "ctbc" | "moomoo",
+  credentials: Record<string, string>,
+): Promise<{ ok: boolean; broker: string; configured: boolean }> =>
+  post("/api/users/broker-creds", { broker, credentials }, jwtHeaders());
+
+export const getBrokerCredsStatus = (
+  broker: "ctbc" | "moomoo",
+): Promise<{ broker: string; configured: boolean }> =>
+  get(`/api/users/broker-creds/${broker}`, jwtHeaders());
+
+export const deleteBrokerCreds = async (
+  broker: "ctbc" | "moomoo",
+): Promise<{ ok: boolean; broker: string; configured: boolean }> => {
+  const token = typeof window !== "undefined" ? localStorage.getItem("loki_token") : null;
+  const res = await fetch(`${BASE}/api/users/broker-creds/${broker}`, {
+    method: "DELETE",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`API /api/users/broker-creds/${broker} → ${res.status}`);
+  return res.json();
+};

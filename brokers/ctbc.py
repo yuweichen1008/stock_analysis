@@ -85,9 +85,14 @@ class CTBCClient(BrokerClient):
     def name(self) -> str:
         return "CTBC"
 
-    def __init__(self):
-        self._id        = os.getenv("CTBC_ID",       "")
-        self._password  = os.getenv("CTBC_PASSWORD",  "")
+    def __init__(
+        self,
+        id: str | None = None,
+        password: str | None = None,
+        profile_suffix: str = "",
+    ):
+        self._id        = id       or os.getenv("CTBC_ID",       "")
+        self._password  = password or os.getenv("CTBC_PASSWORD",  "")
         self._headless  = os.getenv("CTBC_HEADLESS",  "true").lower() != "false"
         self._dry_run   = os.getenv("CTBC_DRY_RUN",   "true").lower() != "false"
         self._pw        = None
@@ -95,6 +100,9 @@ class CTBCClient(BrokerClient):
         self._page      = None
         self._logged_in = False
         self._routes: dict[str, str] = {}   # discovered post-login URLs
+        # Isolated browser profile per user — prevents session conflicts
+        suffix = f"_{profile_suffix}" if profile_suffix else ""
+        self._profile_dir = Path(__file__).parent / f".ctbc_profile{suffix}"
 
     # ──────────────────────────────────────────────────────────────────────────
     # Connection / login
@@ -110,7 +118,7 @@ class CTBCClient(BrokerClient):
 
             # Persistent context = full browser profile saved to disk.
             # On second run the session is usually still live → no re-login needed.
-            _PROFILE_DIR.mkdir(exist_ok=True)
+            self._profile_dir.mkdir(exist_ok=True)
             _ctx_kwargs = dict(
                 headless=self._headless,
                 locale="zh-TW",
@@ -125,12 +133,12 @@ class CTBCClient(BrokerClient):
             try:
                 # Prefer system Chrome — closer fingerprint to a real browser
                 ctx = self._pw.chromium.launch_persistent_context(
-                    str(_PROFILE_DIR), channel="chrome", **_ctx_kwargs
+                    str(self._profile_dir), channel="chrome", **_ctx_kwargs
                 )
             except Exception:
                 # Fall back to bundled Chromium if Chrome isn't installed
                 ctx = self._pw.chromium.launch_persistent_context(
-                    str(_PROFILE_DIR), **_ctx_kwargs
+                    str(self._profile_dir), **_ctx_kwargs
                 )
 
             self._browser = None   # persistent context owns the browser lifecycle

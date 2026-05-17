@@ -9,6 +9,8 @@ import {
 import type { TwsStock, TwsUniverse, OhlcvResponse, BrokerBalance, Position } from "@/lib/types";
 import { twsUniverse, twsStock, twsLookup, chartOhlcv, brokerBalance, brokerPositions } from "@/lib/api";
 import TerminalLog, { type LogEntry, type LogType } from "@/components/TerminalLog";
+import { useAuth } from "@/lib/auth";
+import Link from "next/link";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -503,6 +505,8 @@ function DetailPanel({ ticker, period, onPeriodChange }: {
 type Broker = "CTBC" | "Moomoo";
 
 export default function TwsPage() {
+  const { user } = useAuth();
+
   // ── Broker selector ──────────────────────────────────────────────────────────
   const [broker, setBroker] = useState<Broker>("CTBC");
 
@@ -698,6 +702,18 @@ export default function TwsPage() {
           {broker === "CTBC" ? "台灣股票 · Win168" : "US Stocks · OpenD"}
         </span>
       </div>
+
+      {/* ── Login banner (shown when not authenticated) ──────────────── */}
+      {!user && (
+        <div className="shrink-0 px-4 py-2 bg-[#7c5cfc1a] border-b border-[#7c5cfc40] flex items-center justify-between">
+          <span className="text-xs text-[#a99cff]">
+            Login to connect CTBC / Moomoo and view your personal holdings
+          </span>
+          <Link href="/login?next=/tws" className="text-xs font-semibold text-[#7c5cfc] hover:text-[#8f72ff] whitespace-nowrap ml-3">
+            Sign In →
+          </Link>
+        </div>
+      )}
 
       {broker === "CTBC" && (
       <>

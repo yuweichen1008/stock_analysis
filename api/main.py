@@ -22,6 +22,7 @@ from api.routers import broker as broker_router
 from api.routers import backtest as backtest_router
 from api.routers import charts as charts_router
 from api.routers import tws as tws_router
+from api.routers import users as users_router
 
 
 def _get_real_ip(request: Request) -> str:
@@ -72,6 +73,7 @@ app.include_router(broker_router.router, prefix="/api/broker")
 app.include_router(backtest_router.router)
 app.include_router(charts_router.router)
 app.include_router(tws_router.router)
+app.include_router(users_router.router)
 
 
 @app.get("/")
@@ -125,6 +127,12 @@ def root():
             "/api/options/screener",
             "/api/options/screener/{ticker}/history",
             "/api/options/overview",
+            # User profile + broker credentials (require JWT)
+            "/api/auth/register",
+            "/api/auth/login",
+            "/api/auth/me",
+            "/api/users/broker-creds",
+            "/api/users/broker-creds/{broker}",
             # Broker / trading (require X-Internal-Secret)
             "/api/broker/status",
             "/api/broker/balance",
